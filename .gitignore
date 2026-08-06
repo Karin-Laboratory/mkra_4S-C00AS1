@@ -1,0 +1,12 @@
+/target
+**/__pycache__/
+*.pyc
+
+# Never commit anything recovered from the device or captured off the air.
+*.ts
+*.bin.dump
+/smoke.ts
+/dump*.bin
+/rootfs/
+/evidence/
+.DS_Store

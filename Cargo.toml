@@ -1,0 +1,24 @@
+[package]
+name = "mkra"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+description = "Mirakurun-compatible relay agent for the SHARP 4S-C00AS1 4K tuner"
+license = "MIT"
+
+# No dependencies, on purpose.  The device runs glibc 2.15 userland and has no
+# package manager; everything ships as one statically linked musl binary, and a
+# dependency-free build stays reproducible offline.
+[dependencies]
+
+[profile.release]
+opt-level = "s"      # the box is a dual-core ARMv7; size beats vectorisation here
+lto = true
+codegen-units = 1
+panic = "abort"      # no unwinding tables: smaller text, and a panicking pump
+                     # thread should take the process down rather than wedge it
+strip = true
+
+[[bin]]
+name = "mkra"
+path = "src/main.rs"
