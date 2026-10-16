@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically check and restore the SHARP 4S mkra service
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=45s
+AccuracySec=5s
+RandomizedDelaySec=5s
+Unit=4s-mkra-watch.service
+
+[Install]
+WantedBy=timers.target

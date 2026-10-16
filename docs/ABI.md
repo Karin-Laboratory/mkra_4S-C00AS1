@@ -519,3 +519,30 @@ mkra serve --remux4k --tune --channel-type BS4K --port 40772 --epg-dir /tmp/adsb
   「TSI が lock して CRC が進む」も「get_read が data を返す」も、
   有効な MPEG-TS の証拠にはならなかった。最終的な証拠は常に
   「復号できる画が出るか」「CC エラーが 0 か」である。
+
+
+2026-10-15訂正: REMUX remove_streamの第3ワードはflagではなく
+`m_program_number`。libvixsの0x7f8c4が参照するログ文字列0x120d34で確認。
+動的なservice_idを番組番号に使う場合、削除も同じ番号を渡す。
+純正のliteral 1をそのまま移すと番組101等の削除時に1042エラーとなる。
+
+
+### Owned LOCAL_DEMUX memory-input diagnostic (2026-10-16)
+
+This is a positive control with saved transport data, not a BS2K RF capture.
+The OEM LOCAL_DEMUX create request is `[6, 1, 48, 0, OUT, 0]`.
+The 44-byte host get_write request is
+`[writer, size, flags, descriptor_size, wait, timeout, addr, size0, addr1, size1, desc]`.
+Word 3 requests 128 descriptor bytes; it is not reserved. The descriptor is 32
+u32 words: word 0=128, word 1=returned address (the native sequence-marker
+assignment), word 3=0x100, words 29..31=`[12, 1, subtype]`, all others zero.
+SYSTEM subtype 2 is TS, subtype 3 is TTS. No timestamp flags are asserted.
+The returned descriptor must be a mapped, aligned 128-byte user range.
+Commit is `[writer, addr, size, desc, 0, 0]` (24 bytes).
+
+With descriptors, recorded 188-byte input was reproduced byte for byte;
+192-byte timestamped input produced exactly the same input with each four-byte
+timestamp removed. A separate PID0 filter produced seven CRC-valid PAT sections.
+Without descriptors all these LOCAL_DEMUX outputs were empty. This does not
+establish the physical TSI input path used by type12 DEMUX.
+See BS2K-EXPERIMENT-LOG.ja.md for controls, binaries, and evidence hashes.

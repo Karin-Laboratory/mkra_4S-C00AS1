@@ -211,7 +211,11 @@ def assert_safe(cmd, _depth=0):
     bare = mask_quotes(cmd)          # shell syntax only, quoted text neutralised
     if DD_WRITE.search(bare):
         raise RuntimeError("BLOCKED (dd of=): %r" % cmd)
-    if REDIR_WRITE.search(bare):
+    # Authorized volatile network setting required after each cold boot.
+    # Match the whole command, so this cannot authorize other proc writes,
+    # values, appended commands, or persistent sysctl configuration.
+    volatile_tcp_fix = cmd == "echo 0 > /proc/sys/net/ipv4/tcp_tw_recycle"
+    if REDIR_WRITE.search(bare) and not volatile_tcp_fix:
         raise RuntimeError("BLOCKED (write outside /tmp): %r" % cmd)
     # path checks run on the original: a quoted path is still a path
     if SPI_FLASH_DEV.search(cmd):
@@ -230,7 +234,7 @@ def assert_safe(cmd, _depth=0):
 
 
 class SharpTelnet:
-    def __init__(self, host="192.168.0.40", port=2323, timeout=20, verbose=False):
+    def __init__(self, host="198.51.100.10", port=2323, timeout=20, verbose=False):
         self.host, self.port, self.timeout = host, port, timeout
         self.verbose = verbose
         self.buf = b""
@@ -514,7 +518,7 @@ class SharpTelnet:
             pass
 
 
-def connect(host="192.168.0.40", port=2323, timeout=20):
+def connect(host="198.51.100.10", port=2323, timeout=20):
     t = SharpTelnet(host, port, timeout)
     t.login()
     return t

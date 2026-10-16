@@ -112,6 +112,8 @@ pub const BS4K_CHANNEL_TYPE: &str = "BS4K";
 impl Channel {
     /// Mirakurun `ChannelType`. Configurable because the two client families
     /// disagree about how to name advanced BS; see DESIGN.md §2.3.
+    pub fn is_bs2k(&self)->bool {self.services.first().is_some_and(|s|s.network_id==4 || s.network_id==6 || s.network_id==7)}
+
     pub fn ch_type(&self) -> &str {
         &self.ch_type
     }
@@ -123,6 +125,37 @@ pub struct ChannelTable {
 }
 
 impl ChannelTable {
+    /// Only the transport actually received and descrambled on this receiver.
+    pub fn add_verified_bs2k(&mut self) {
+        self.channels.push(Channel {key:"BS_TS4010".into(),name:"BS-1 TSID4010 (BS朝日)".into(),slot:1,freq_khz:11_727_480,tsid:0x4010,ch_type:"BS".into(),services:[151,152,153].into_iter().map(|sid|Service {service_id:sid,network_id:4,name:format!("BS朝日{}",sid-150),service_type:1}).collect()});
+    }
+    /// Explicit ordinary BS/CS transport list; no unmeasured broadcast plan is invented.
+    /// Columns: type, network_id, service_id, transport_stream_id(hex), freq_khz, name.
+    pub fn add_isdbs_tsv(&mut self,text:&str)->Result<(),String> {
+        let mut lines=text.lines().filter(|l|!l.trim().is_empty());
+        let header:Vec<_>=lines.next().ok_or("empty ISDB-S table")?.split('\t').collect();
+        let column=|key:&str|header.iter().position(|&s|s==key).ok_or_else(||format!("missing ISDB-S column {key}"));
+        let (kind,network,sid,tsid,freq,name)=(column("type")?,column("network_id")?,column("service_id")?,column("transport_stream_id")?,column("freq_khz")?,column("name")?);
+        let mut added=0;
+        for line in lines {
+            let f:Vec<_>=line.split('\t').collect();if f.len()!=header.len() {return Err("ISDB-S row length differs".into())}
+            let network:u16=f[network].parse().map_err(|_|"bad network_id")?;
+            let typ=f[kind];if !((typ=="BS" && network==4)||(typ=="CS" && [6,7].contains(&network))) {return Err("ISDB-S type/network mismatch".into())}
+            let sid:u16=f[sid].parse().map_err(|_|"bad service_id")?;
+            let tsid=u16::from_str_radix(f[tsid].trim_start_matches("0x"),16).map_err(|_|"bad hexadecimal TSID")?;
+            let freq:u32=f[freq].parse().map_err(|_|"bad RF kHz")?;
+            if sid==0 || tsid==0xffff || crate::tuner::rf_to_bcd10(freq).is_none() {return Err("ISDB-S tune parameters out of range".into())}
+            if self.find_service(network as u64*100_000+sid as u64).is_some() {return Err("duplicate ISDB-S service".into())}
+            let key=format!("{typ}_TS{tsid:04X}");
+            let service=Service {service_id:sid,network_id:network,name:f[name].into(),service_type:1};
+            if let Some(c)=self.channels.iter_mut().find(|c|c.key==key) {
+                if c.freq_khz!=freq || c.ch_type!=typ {return Err("conflicting ISDB-S transport".into())}
+                c.services.push(service);
+            }else {self.channels.push(Channel {key,name:format!("{typ} TSID {tsid:04X}"),slot:0,freq_khz:freq,tsid,services:vec![service],ch_type:typ.into()});}
+            added+=1;
+        }
+        if added==0 {return Err("no ISDB-S services".into())}Ok(())
+    }
     pub fn builtin() -> Self {
         Self::from_records(ADVBS.iter().map(|&(sid, tsid, freq, slot, name)| Record {
             service_id: sid,
@@ -394,5 +427,21 @@ mod tuning_record_tests {
     #[test]
     fn an_unknown_service_has_none() {
         assert_eq!(tuning_record(999), None);
+    }
+}
+
+#[cfg(test)]
+mod unified_tests {
+    use super::*;
+    #[test]
+    fn mixed_table_keeps_service_ids_and_channel_keys_separate() {
+        let mut t=ChannelTable::builtin();t.set_channel_type("BS4K");t.add_verified_bs2k();
+        assert_eq!(t.find_service(400151).unwrap().0.key,"BS_TS4010");
+        assert_eq!(t.find_service(1100151).unwrap().0.key,"BS7_0");
+        assert!(t.find("BS4K","BS_TS4010").is_none());
+        let cs="type\tnetwork_id\tservice_id\ttransport_stream_id\tfreq_khz\tname\nCS\t6\t100\t6020\t12291000\tConfigured only\n";
+        t.add_isdbs_tsv(cs).unwrap();assert!(t.find("CS","CS_TS6020").unwrap().is_bs2k());
+        assert!(t.add_isdbs_tsv(cs).is_err());
+        assert!(t.add_isdbs_tsv(&cs.replace("12291000","1")).is_err());
     }
 }

@@ -1,0 +1,27 @@
+[Unit]
+Description=Restore volatile SHARP 4S mkra tuner service when needed
+Wants=network-online.target
+After=network-online.target epgstation.service bs4k-epg-proxy.service
+
+[Service]
+Type=oneshot
+User=bs4k-epg
+Group=bs4k-epg
+Environment=TUNER_HOST=198.51.100.10
+Environment=TELNET_PORT=2323
+Environment=MKRA_API=http://198.51.100.10:40772
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /usr/local/libexec/4s-mkra-watch/watch.py
+TimeoutStartSec=300
+UMask=0027
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ReadWritePaths=/var/lib/4s-mkra-watch
+RestrictAddressFamilies=AF_UNIX AF_INET
+LockPersonality=yes
+MemoryMax=128M

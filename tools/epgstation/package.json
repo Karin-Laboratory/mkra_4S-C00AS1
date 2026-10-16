@@ -1,0 +1,8 @@
+{
+  "name": "mkra-epg-tools",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "scripts": {"test": "ARIBTS_PATH=$PWD/node_modules/aribts node --test test-eit.cjs test-proxy.cjs test-program-stream.cjs"},
+  "dependencies": {"aribts": "2.1.12"}
+}

@@ -493,6 +493,11 @@ pub struct TapConfig {
     /// measured on this box it makes the REMUX stop taking input after a few
     /// seconds, so the default is off. Diagnostic use only.
     pub with_tsinfo: bool,
+    /// Explicit diagnostic: permit capture without native decoder readers only
+    /// after the same ES pair shows fresh write progress in both rings.
+    pub allow_no_decoder: bool,
+    /// CLI diagnostic: preserve the native 192-byte TTS records in output.
+    pub raw_output: bool,
     /// Release the live ES rings once the source ring has backed up this far.
     pub es_level_abort: u32,
     /// Backstop for the same condition, in milliseconds (0 disables).
@@ -507,6 +512,8 @@ impl Default for TapConfig {
             stream_id: 1,
             service_id: PROGRAM_NUMBER as u16,
             with_tsinfo: false,
+            allow_no_decoder: false,
+            raw_output: false,
             es_level_abort: 48,
             stall_abort_ms: 5000,
             gap_log_ms: 150,
@@ -545,6 +552,24 @@ pub struct Tap {
     pub longest_gap: Duration,
 }
 
+/// Require the same live ES pair and fresh video AND audio writes, regardless
+/// of native HDMI reader count. Used to confirm unified 4K tuning.
+pub fn verify_fresh_es(drv: &Arc<XcDrv>) -> io::Result<()> {
+    let live = discover(drv).map_err(io::Error::other)?;
+    let video_before = drv.sbuf_status_raw(live.video_es)?;
+    let audio_before = drv.sbuf_status_raw(live.audio_es)?;
+    std::thread::sleep(Duration::from_millis(250));
+    let again = discover(drv).map_err(io::Error::other)?;
+    let video_after = drv.sbuf_status_raw(live.video_es)?;
+    let audio_after = drv.sbuf_status_raw(live.audio_es)?;
+    if (again.mmt_demux, again.pipeline, again.video_es, again.audio_es)
+        != (live.mmt_demux, live.pipeline, live.video_es, live.audio_es)
+        || video_before[10..12] == video_after[10..12]
+        || audio_before[10..12] == audio_after[10..12]
+    { return Err(io::Error::other("4K ES pair is unstable or video/audio writes are not advancing")); }
+    Ok(())
+}
+
 impl Tap {
     pub fn open(drv: Arc<XcDrv>, cfg: TapConfig) -> io::Result<Self> {
         let live = discover(&drv).map_err(io::Error::other)?;
@@ -555,10 +580,28 @@ impl Tap {
         // product from rebuilding at all. Both product decoders being attached
         // is the cheap, reliable signal that the chain is live.
         if live.video_readers == 0 || live.audio_readers == 0 {
-            return Err(io::Error::other(format!(
-                "the product's decode chain is not up yet (video readers {}, audio readers {})",
-                live.video_readers, live.audio_readers
-            )));
+            if !cfg.allow_no_decoder {
+                return Err(io::Error::other(format!(
+                    "the product's decode chain is not up yet (video readers {}, audio readers {})",
+                    live.video_readers, live.audio_readers
+                )));
+            }
+            let video_before = drv.sbuf_status_raw(live.video_es)?;
+            let audio_before = drv.sbuf_status_raw(live.audio_es)?;
+            std::thread::sleep(Duration::from_millis(250));
+            let again = discover(&drv).map_err(io::Error::other)?;
+            let video_after = drv.sbuf_status_raw(live.video_es)?;
+            let audio_after = drv.sbuf_status_raw(live.audio_es)?;
+            if (again.mmt_demux, again.pipeline, again.video_es, again.audio_es)
+                != (live.mmt_demux, live.pipeline, live.video_es, live.audio_es)
+                || video_before[10..12] == video_after[10..12]
+                || audio_before[10..12] == audio_after[10..12]
+            {
+                return Err(io::Error::other(
+                    "no-decoder capture requires a stable ES pair with fresh video and audio writes",
+                ));
+            }
+            eprintln!("remux4k: explicit no-decoder diagnostic; both ES rings are advancing");
         }
         eprintln!(
             "remux4k: MMT_DEMUX={:#x} pipeline={:#x} video_es={:#x} (readers {}) audio_es={:#x} (readers {})",
@@ -686,7 +729,7 @@ impl Tap {
         }
         if self.streams_added {
             for (label, conn) in [("video", self.conn_video), ("audio", self.conn_audio)] {
-                if let Err(e) = d.remux_remove_stream(self.device, conn, 1) {
+                if let Err(e) = d.remux_remove_stream(self.device, conn, u32::from(self.cfg.service_id)) {
                     eprintln!("mkra: warning: remove {label} stream: {e}");
                 }
             }
@@ -771,7 +814,15 @@ impl TsSource for Tap {
         self.last_data = Instant::now();
         let before = out.len();
         let raw = std::mem::take(&mut self.raw);
-        self.unwrap.push(&raw, out);
+        if self.cfg.raw_output {
+            // Keep the existing unwrap counters/validation, but write the
+            // actual TSOUT bytes, including timestamps and partial records.
+            let mut validation = Vec::new();
+            self.unwrap.push(&raw, &mut validation);
+            out.extend_from_slice(&raw);
+        } else {
+            self.unwrap.push(&raw, out);
+        }
         self.raw = raw;
         Ok(out.len() - before)
     }

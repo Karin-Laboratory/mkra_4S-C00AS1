@@ -1,3 +1,5 @@
+> 本家由来のBS4K中心の資料です。統合版の起動・制限は[README](../README.md)を優先してください。
+
 # 導入手順
 
 telnet が使える状態から、TVTest で BS4K が映るところまで。所要 15 分ほどです。
@@ -31,7 +33,7 @@ SPI フラッシュ上の U-Boot 環境変数（`bootargs`）を書き換えて�
 telnet の確認:
 
 ```sh
-telnet 192.168.0.40 2323
+telnet 198.51.100.10 2323
 # パスワードなしで root の /bin/sh が出る
 cat /proc/cmdline        # telnetd 入りの init= が見える
 ls /dev/vixs/            # xcodedrv があること
@@ -55,7 +57,7 @@ mkra は取り出す対象そのものが無いので、必ず 0 バイトにな
 
 ### Releases から（推奨。Rust 不要）
 
-[Releases](../../releases) から `mkra` をダウンロードします。
+[Releases](https://github.com/Karin-Laboratory/mkra_4S-C00AS1/releases) から `mkra` をダウンロードします。
 armv7 musl の完全静的バイナリなので、本体側に必要なものはありません。
 
 ### ソースからビルドする
@@ -74,7 +76,7 @@ Docker もクロス gcc も sysroot も不要です（依存クレート 0 の�
 ## 3. 配備して、動くことを確認する
 
 ```sh
-python3 tools/deploy.py --host 192.168.0.40 --binary ./mkra --smoke
+python3 tools/deploy.py --host 198.51.100.10 --binary ./mkra --smoke
 ```
 
 これが行うこと:
@@ -106,7 +108,7 @@ python3 tools/deploy.py --host 192.168.0.40 --binary ./mkra --smoke
 ## 4. サーバとして起動する
 
 ```sh
-python3 tools/deploy.py --host 192.168.0.40 --binary ./mkra --serve
+python3 tools/deploy.py --host 198.51.100.10 --binary ./mkra --serve
 ```
 
 実際に本体で起動されるのはこれです:
@@ -128,7 +130,7 @@ python3 tools/deploy.py --host 192.168.0.40 --binary ./mkra --serve
 停止:
 
 ```sh
-python3 tools/deploy.py --host 192.168.0.40 --stop
+python3 tools/deploy.py --host 198.51.100.10 --stop
 ```
 
 ---
@@ -139,15 +141,15 @@ python3 tools/deploy.py --host 192.168.0.40 --stop
 
 - **TVTest + BonDriver_LinuxMirakurunBS4K**: `SERVER_HOST` に本体 IP、`SERVER_PORT=40772`、
   `CHANNEL_TYPES="BS4K"`、`DECODE_B25=0`
-- **EPGStation**: `mirakurunPath` に `http://192.168.0.40:40772`。
+- **EPGStation**: `mirakurunPath` に `http://198.51.100.10:40772`。
   mkra 自身が Mirakurun 互換サーバなので、**別に Mirakurun を立てる必要はありません**
 
 動作確認:
 
 ```sh
-curl -s http://192.168.0.40:40772/api/version
-curl -s http://192.168.0.40:40772/api/channels
-curl -sm 15 http://192.168.0.40:40772/api/services/1100141/stream -o test.ts && ffprobe test.ts
+curl -s http://198.51.100.10:40772/api/version
+curl -s http://198.51.100.10:40772/api/channels
+curl -sm 15 http://198.51.100.10:40772/api/services/1100141/stream -o test.ts && ffprobe test.ts
 ```
 
 ---

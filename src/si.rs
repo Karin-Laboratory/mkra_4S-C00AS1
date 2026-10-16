@@ -1195,6 +1195,20 @@ pub fn live_service(dir: &str) -> Option<LiveService> {
     }
 }
 
+/// Selected MPT identity independent of the presentation-only MH-SDT cache.
+/// Callers must additionally verify fresh, stable live ES before streaming.
+pub fn selected_mpt_service(dir: &str) -> Option<u16> {
+    selected_mpt_bytes(&std::fs::read(format!("{dir}/AdsbSiMpt.dat")).ok()?)
+}
+
+fn selected_mpt_bytes(mpt: &[u8]) -> Option<u16> {
+    let total = section_total_len(mpt, 0)?;
+    if total < 8 || total > mpt.len() { return None; }
+    let sid = parse_mpt_package_id(mpt)?;
+    crate::channels::tuning_record(sid)?;
+    Some(sid)
+}
+
 #[cfg(test)]
 mod live_tests {
     use super::*;
@@ -1233,6 +1247,16 @@ mod live_tests {
         let n = bad.len();
         bad[n - 1] ^= 0xff;
         assert!(parse_mh_sdt_actual(&bad).is_none());
+    }
+
+    #[test]
+    fn selected_mpt_rejects_truncation_unknown_service_and_short_length() {
+        let mpt = [0x20, 0x54, 0, 4, 0xfc, 2, 0, 141];
+        assert_eq!(selected_mpt_bytes(&mpt), Some(141));
+        assert!(selected_mpt_bytes(&mpt[..7]).is_none());
+        let mut bad=mpt; bad[3]=0; assert!(selected_mpt_bytes(&bad).is_none());
+        bad=mpt; bad[7]=99; assert!(selected_mpt_bytes(&bad).is_none());
+        bad=mpt; bad[0]=0x21; assert!(selected_mpt_bytes(&bad).is_none());
     }
 
     #[test]

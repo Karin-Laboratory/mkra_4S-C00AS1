@@ -39,8 +39,29 @@ pub struct DmdOutputRegs {
     pub lock: u8,
     /// `(register, value)` for I2C 7-bit `0x10` (SC1501A bank 0).
     pub bank0: [(u8, u8); 6],
+    /// ISDB-S selection controls, not a received PAT or a selected-stream lock.
+    /// `tuner:0x2304e..0x230be` programs TSID at 2f/30 and mode at 31.
+    pub bank2_selection: [u8; 3],
     /// `(register, value)` for I2C 7-bit `0x17` (SC1501A bank 7).
     pub bank7: [(u8, u8); 9],
+}
+
+/// Received monitor windows, independent of the requested TSID registers.
+pub struct IsdbsTmcc {
+    pub locks: [u8; 2],
+    pub selectors: [u8; 2],
+    pub indexed_tsids: [u16; 8],
+    pub raw: [u8; 40],
+}
+
+/// DMD_isdbs_tmcc_tbl information 59..66: MSB-first fields at bit 189+16*n.
+pub fn tmcc_tsid_fields(raw: &[u8; 40]) -> [u16; 8] {
+    std::array::from_fn(|i| {
+        let start = 189 + 16 * i;
+        (start..start + 16).fold(0u16, |value, bit| {
+            (value << 1) | u16::from((raw[bit / 8] >> (7 - bit % 8)) & 1)
+        })
+    })
 }
 
 /// Bank-0 registers sampled by [`DmdOutputRegs`], in report order.
@@ -97,8 +118,8 @@ impl TsoutTarget {
 /// MPEG-TS standard table (`regset_ISDBS`, `regset_ISDBT_6MHz`, `regset_DVBC`,
 /// `regset_DVBT_*`, `regset_QAMB_*`, `regset_ISDBC_*`); bit 5 is set only in
 /// the two serial widths. `0x13` is written by no table except the TLV_SPI
-/// ones. On this board the only output wired to XCode6 TSI0 is that 1-bit
-/// serial port, which is what the 4K path uses.
+/// ones. The working 4K path uses the 1-bit serial port on XCode6 TSI0.
+/// Other physical wiring has not been established by continuity measurements.
 pub const SERIAL_1BIT_IFACE: [(u8, u8); 3] = [(0x13, 0x04), (0x16, 0x21), (0xcc, 0x80)];
 /// What `regset_ISDBS` + `DMD_set_tsout(case 0/1)` leave behind, measured on
 /// this box in Gate 5C1/5C2.
@@ -127,6 +148,11 @@ pub enum TsoutInterface {
     Mode16Serial,
     /// Rollback of [`TsoutInterface::Mode16Serial`].
     Mode16Isdbs,
+    /// Hypothesis: bit 5 selects serial width independently of bit 0 (TLV).
+    /// This value is experimental, not a confirmed vendor TS profile.
+    TsSerial20,
+    /// Restore the exact pre-experiment byte.
+    TsSerial20Restore,
 }
 
 impl TsoutInterface {
@@ -136,6 +162,8 @@ impl TsoutInterface {
             TsoutInterface::IsdbsDefault => &ISDBS_IFACE,
             TsoutInterface::Mode16Serial => &MODE16_SERIAL,
             TsoutInterface::Mode16Isdbs => &MODE16_ISDBS,
+            TsoutInterface::TsSerial20 => &[(0x16, 0x20)],
+            TsoutInterface::TsSerial20Restore => &MODE16_ISDBS,
         }
     }
 
@@ -145,6 +173,8 @@ impl TsoutInterface {
             TsoutInterface::IsdbsDefault => &SERIAL_1BIT_IFACE,
             TsoutInterface::Mode16Serial => &MODE16_ISDBS,
             TsoutInterface::Mode16Isdbs => &MODE16_SERIAL,
+            TsoutInterface::TsSerial20 => &MODE16_ISDBS,
+            TsoutInterface::TsSerial20Restore => &[(0x16, 0x20)],
         }
     }
 }
@@ -414,7 +444,9 @@ mod arm_linux {
             for (slot, reg) in bank7.iter_mut().zip(DMD_BANK7_REGS) {
                 *slot = (reg, bus.read(0x17, reg, 1)?[0]);
             }
-            Ok(DmdOutputRegs { lock, bank0, bank7 })
+            let selection = bus.read(0x12, 0x2f, 3)?;
+            let bank2_selection = [selection[0], selection[1], selection[2]];
+            Ok(DmdOutputRegs { lock, bank0, bank2_selection, bank7 })
         })();
         let release = guard.release();
         match (result, release) {
@@ -422,6 +454,111 @@ mod arm_linux {
             (Ok(_), Err(e)) => Err(e),
             (Ok(v), Ok(())) => Ok(v),
         }
+    }
+
+    /// Compare native info44 relative-TS0 selection with info45 TSID selection.
+    /// Fixed diagnostic for BS-1/4010 only. Native tuner:23018 masks reg31
+    /// with 0x0f and writes 8 for relative zero; 2304e clears bit3 for TSID.
+    /// Verify a live received 4010 at relative zero before changing reg31.
+    pub fn select_isdbs_relative_zero(restore: bool) -> io::Result<super::IsdbsTsExclusiveResult> {
+        let guard = I2c0Guard::attach_and_take()?;
+        let bus = I2c0::open()?;
+        let result = (|| {
+            for (bank, reg, expected) in [
+                (0x10, 0x0b, 1), (0x10, 0x16, 0), (0x17, 0x72, 0),
+                (0x12, 0x2f, 0x40), (0x12, 0x30, 0x10),
+                (0x12, 0x31, if restore { 8 } else { 0 }),
+            ] {
+                let got = bus.read(bank, reg, 1)?[0];
+                if got != expected {
+                    return Err(io::Error::other(format!("relative-TS0 guard {bank:02x}:{reg:02x}={got:02x}, expected {expected:02x}")));
+                }
+            }
+            if !restore {
+                if bus.read(0x12, 0x5e, 1)?[0] & 0x20 == 0 {
+                    return Err(io::Error::other("relative-TS0 requires ISDB-S lock"));
+                }
+                let saved = bus.read(0x12, 0x62, 1)?[0];
+                let monitor = (|| -> io::Result<[u8; 2]> {
+                    bus.write(0x12, 0x62, &[0])?;
+                    Ok([bus.read(0x12, 0x63, 1)?[0], bus.read(0x12, 0x64, 1)?[0]])
+                })();
+                let restored = bus.write(0x12, 0x62, &[saved]);
+                restored?;
+                if bus.read(0x12, 0x62, 1)?[0] != saved {
+                    return Err(io::Error::other("relative-TS monitor selector restore failed"));
+                }
+                if monitor? != [0x40, 0x10] {
+                    return Err(io::Error::other("received relative TS0 is not 4010"));
+                }
+            }
+            let before = if restore { 8 } else { 0 };
+            let after = if restore { 0 } else { 8 };
+            bus.mask_write(0x12, 0x31, if restore { 8 } else { 15 }, after)?;
+            if bus.read(0x12, 0x31, 1)?[0] != after {
+                bus.write(0x12, 0x31, &[before])?;
+                return Err(io::Error::other("relative-TS0 readback failed; rollback attempted"));
+            }
+            Ok(super::IsdbsTsExclusiveResult { before, after })
+        })();
+        let release = guard.release();
+        match (result, release) {
+            (Err(e), _) | (Ok(_), Err(e)) => Err(e),
+            (Ok(value), Ok(())) => Ok(value),
+        }
+    }
+
+    /// Reproduce the vendor's two bounded ISDB-S monitor reads. Only the
+    /// volatile monitor selectors 62/65 are written; both are restored under
+    /// the same I2C semaphore even when reading fails. No tuning/output writes.
+    /// Native references: tuner:0x251d0 (info45), 0x260fc (TMCC window).
+    pub fn read_isdbs_tmcc() -> io::Result<super::IsdbsTmcc> {
+        let guard = I2c0Guard::attach_and_take()?;
+        let bus = I2c0::open()?;
+        let first_lock = bus.read(0x12, 0x5e, 1)?[0];
+        // The vendor get_info monitor does not require TS lock. Requiring it
+        // here would hide the received TSID table when the requested TSID is
+        // missing. Instead verify the known ISDB-S output signature, and
+        // report both raw lock bytes without treating unlocked data as valid.
+        if bus.read(0x10, 0x0b, 1)?[0] != 1
+            || bus.read(0x10, 0x16, 1)?[0] != 0
+            || bus.read(0x17, 0x72, 1)?[0] != 0 {
+            return Err(io::Error::other("TMCC monitor requires the known ISDB-S profile"));
+        }
+        let selectors = [bus.read(0x12, 0x62, 1)?[0], bus.read(0x12, 0x65, 1)?[0]];
+        let operation = (|| -> io::Result<super::IsdbsTmcc> {
+            let mut indexed_tsids = [0u16; 8];
+            for (i, slot) in indexed_tsids.iter_mut().enumerate() {
+                bus.write(0x12, 0x62, &[i as u8])?;
+                // The OEM reads these individually, so do the same.
+                let hi = bus.read(0x12, 0x63, 1)?[0];
+                let lo = bus.read(0x12, 0x64, 1)?[0];
+                *slot = u16::from_be_bytes([hi, lo]);
+            }
+            let mut raw = [0u8; 40];
+            for (i, slot) in raw.iter_mut().enumerate() {
+                bus.write(0x12, 0x65, &[i as u8])?;
+                *slot = bus.read(0x12, 0x66, 1)?[0];
+            }
+            let last_lock = bus.read(0x12, 0x5e, 1)?[0];
+            Ok(super::IsdbsTmcc { locks: [first_lock, last_lock], selectors, indexed_tsids, raw })
+        })();
+        // Always attempt both restores and release, independently of errors.
+        let restore_relative = bus.write(0x12, 0x62, &[selectors[0]]);
+        let restore_window = bus.write(0x12, 0x65, &[selectors[1]]);
+        let verify = (|| -> io::Result<()> {
+            if bus.read(0x12, 0x62, 1)?[0] != selectors[0]
+                || bus.read(0x12, 0x65, 1)?[0] != selectors[1] {
+                return Err(io::Error::other("TMCC monitor selectors did not restore"));
+            }
+            Ok(())
+        })();
+        let release = guard.release();
+        restore_relative?;
+        restore_window?;
+        verify?;
+        release?;
+        operation
     }
 
     /// Install one of the two documented output-framing states on bank 7.
@@ -724,14 +861,108 @@ mod arm_linux {
             (Ok(v), Ok(())) => Ok(v),
         }
     }
+    /// Vendor DMD_set_tsout uses reg0b bit0=0 for output flag bit2=1.
+    /// The same flag selects TLV_SPI_8BIT in the S3 branch. Test the
+    /// corresponding MPEG-TS parallel profile; the electrical meaning remains
+    /// inferred from the vendor code rather than a public register map.
+    pub fn experiment_ts_parallel(restore: bool) -> io::Result<()> {
+        let guard = I2c0Guard::attach_and_take()?;
+        let bus = I2c0::open()?;
+        let result = (|| -> io::Result<()> {
+            if bus.read(0x12, 0x5e, 1)?[0] & 0x20 == 0 {
+                return Err(io::Error::other("ISDB-S is not locked"));
+            }
+            let (before, after) = if restore { (0x00, 0x01) } else { (0x01, 0x00) };
+            for (bank, reg, value) in [
+                (0x10,0x0b,before), (0x10,0x13,0x00), (0x10,0x16,0x00),
+                (0x10,0xcc,0x80), (0x17,0x72,0x00),
+            ] {
+                if bus.read(bank,reg,1)?[0] != value {
+                    return Err(io::Error::other("TS parallel profile: unexpected starting register"));
+                }
+            }
+            bus.write(0x10,0x0b,&[after])?;
+            if bus.read(0x10,0x0b,1)?[0] != after {
+                bus.write(0x10,0x0b,&[before])?;
+                return Err(io::Error::other("TS parallel readback mismatch; restored starting byte"));
+            }
+            Ok(())
+        })();
+        let release = guard.release();
+        result.and(release)
+    }
+
+    /// Experimental forwarding of legacy TS into the known 1-bit SPI output
+    /// stage. Values come from regset_TLV_SPI_1BIT; whether bank7:72 selects
+    /// the required forwarding path is the hypothesis, not an established fact.
+    /// No unknown bits, permanent configuration, or unbounded register sweep.
+    pub fn experiment_spi_forward(restore: bool) -> io::Result<()> {
+        let guard = I2c0Guard::attach_and_take()?;
+        let bus = I2c0::open()?;
+        let result = (|| -> io::Result<()> {
+            if bus.read(0x12, 0x5e, 1)?[0] & 0x20 == 0 {
+                return Err(io::Error::other("ISDB-S is not locked"));
+            }
+            let (old16, old72, new16, new72) = if restore {
+                (0x21, 0x02, 0x00, 0x00)
+            } else {
+                (0x00, 0x00, 0x21, 0x02)
+            };
+            for (bank, reg, value) in [
+                (0x10, 0x0b, 0x01), (0x10, 0x13, 0x00),
+                (0x10, 0xcc, 0x80), (0x10, 0x16, old16),
+                (0x17, 0x72, old72), (0x17, 0x7b, 0x67), (0x17, 0x7d, 0x81),
+            ] {
+                let got = bus.read(bank, reg, 1)?[0];
+                if got != value {
+                    return Err(io::Error::other(format!(
+                        "SPI hypothesis refused: bank {bank:#x} reg {reg:#x} is {got:#x}, expected {value:#x}")));
+                }
+            }
+            let writes = [(0x10, 0x16, new16, old16), (0x17, 0x72, new72, old72)];
+            for &(bank, reg, new, _) in &writes {
+                // On a transfer/readback failure, attempt to restore both
+                // already-compared original bytes before releasing the lock.
+                let changed = bus.write(bank, reg, &[new]).and_then(|_| {
+                    if bus.read(bank, reg, 1)?[0] != new {
+                        return Err(io::Error::other("SPI hypothesis readback mismatch"));
+                    }
+                    Ok(())
+                });
+                if let Err(error) = changed {
+                    for &(b, r, _, old) in writes.iter().rev() {
+                        if let Err(rollback) = bus.write(b, r, &[old]) {
+                            eprintln!("SPI rollback failed: {rollback}");
+                        }
+                    }
+                    return Err(error);
+                }
+            }
+            Ok(())
+        })();
+        let release = guard.release();
+        result.and(release)
+    }
+
 }
 
 #[cfg(all(target_os = "linux", target_arch = "arm"))]
 pub use arm_linux::{
     make_isdbs_ts_output_exclusive, quiesce_ts_output, read_isdbs_status, read_output_regs,
     select_tlv_output_exclusive, set_tsout_framing, set_tsout_interface, snapshot_watchlist,
-    standby_isdbt, tune,
+    standby_isdbt, tune, experiment_spi_forward, experiment_ts_parallel,
+    read_isdbs_tmcc, select_isdbs_relative_zero,
 };
+
+#[cfg(not(all(target_os = "linux", target_arch = "arm")))]
+pub fn select_isdbs_relative_zero(_restore: bool) -> std::io::Result<IsdbsTsExclusiveResult> {
+    Err(std::io::Error::other("relative-TS0 diagnostic requires the ARM device build"))
+}
+
+#[cfg(not(all(target_os = "linux", target_arch = "arm")))]
+pub fn read_isdbs_tmcc() -> std::io::Result<IsdbsTmcc> {
+    Err(std::io::Error::other("TMCC monitor requires the ARM device build"))
+}
 
 #[cfg(not(all(target_os = "linux", target_arch = "arm")))]
 pub fn set_tsout_interface(_target: TsoutInterface) -> std::io::Result<TsoutRestoreResult> {
@@ -815,6 +1046,19 @@ pub fn standby_isdbt() -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tmcc_tsid_fields_extract_all_eight_unaligned_msb_first_values() {
+        let expected = [0x4010u16, 0x4011, 0x4012, 0xffff, 0, 1, 0x8000, 0xabcd];
+        let mut bytes = [0u8; 40];
+        // Fixed packed vector: 189 leading zero bits, eight big-endian
+        // identifiers, three trailing zero bits. Do not reuse the extractor
+        // indexing formula to manufacture this fixture.
+        bytes[23..].copy_from_slice(&[
+            0x02, 0x00, 0x82, 0x00, 0x8a, 0x00, 0x97, 0xff, 0xf8,
+            0x00, 0x00, 0x00, 0x0c, 0x00, 0x05, 0x5e, 0x68,
+        ]);
+        assert_eq!(super::tmcc_tsid_fields(&bytes), expected);
+    }
     use super::*;
 
     #[test]
@@ -933,4 +1177,14 @@ mod tests {
             assert_eq!(classify_tsout(&sample), TsoutFraming::Other);
         }
     }
+}
+
+#[cfg(not(all(target_os = "linux", target_arch = "arm")))]
+pub fn experiment_spi_forward(_restore: bool) -> std::io::Result<()> {
+    Err(std::io::Error::other("SPI experiment is ARM-only"))
+}
+
+#[cfg(not(all(target_os = "linux", target_arch = "arm")))]
+pub fn experiment_ts_parallel(_restore: bool) -> std::io::Result<()> {
+    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "ARM device only"))
 }

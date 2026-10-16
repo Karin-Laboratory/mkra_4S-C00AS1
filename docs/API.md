@@ -1,3 +1,5 @@
+> 本家由来のBS4K中心の資料です。統合版の起動・制限は[README](../README.md)を優先してください。
+
 # API とクライアント設定
 
 mkra は本体の `:40772` で **Mirakurun 互換の HTTP API** を喋ります。
@@ -13,7 +15,7 @@ mkra は本体の `:40772` で **Mirakurun 互換の HTTP API** を喋ります�
 
 ```ini
 [GLOBAL]
-SERVER_HOST="192.168.0.40"    ; 本体の IP
+SERVER_HOST="198.51.100.10"    ; 本体の IP
 SERVER_PORT=40772
 CHANNEL_TYPES="BS4K"
 DECODE_B25=0                  ; mkra は復号しません。?decode= は受理して無視します
@@ -29,11 +31,11 @@ mkra 側を `--channel-type BS` で起動し（`deploy.py --channel-type BS`）�
 
 ### EPGStation
 
-`config.yml` の `mirakurunPath` に `http://192.168.0.40:40772` を設定します。
+`config.yml` の `mirakurunPath` に `http://198.51.100.10:40772` を設定します。
 
 ### MacTVTest
 
-Mirakurun 基点 URL に `http://192.168.0.40:40772/` を設定します。
+Mirakurun 基点 URL に `http://198.51.100.10:40772/` を設定します。
 `/api/services`・`/api/services/{id}/stream`・`/api/programs`・`logo` のみを使う実装です。
 
 ---

@@ -2,8 +2,8 @@
 name = "mkra"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.70"
-description = "Mirakurun-compatible relay agent for the SHARP 4S-C00AS1 4K tuner"
+rust-version = "1.85"
+description = "Mirakurun-compatible relay agent for the SHARP 4S-C00AS1 BS2K/BS4K tuner"
 license = "MIT"
 
 # No dependencies, on purpose.  The device runs glibc 2.15 userland and has no

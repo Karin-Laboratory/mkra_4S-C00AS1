@@ -5,10 +5,10 @@ Everything lands in /tmp/mt, which is tmpfs: a power cycle undoes all of it.
 Nothing here writes to eMMC, MTD, SPI flash or /dev/shm, and nothing signals a
 product process.
 
-    python3 tools/deploy.py --host 192.168.0.40                 # upload only
-    python3 tools/deploy.py --host 192.168.0.40 --smoke         # + prove it streams
-    python3 tools/deploy.py --host 192.168.0.40 --smoke --serve # + leave it running
-    python3 tools/deploy.py --host 192.168.0.40 --stop          # stop our server
+    python3 tools/deploy.py --host 198.51.100.10                 # upload only
+    python3 tools/deploy.py --host 198.51.100.10 --smoke         # + prove it streams
+    python3 tools/deploy.py --host 198.51.100.10 --smoke --serve # + leave it running
+    python3 tools/deploy.py --host 198.51.100.10 --stop          # stop our server
 
 --smoke captures ten seconds of live 4K on the box, pulls it back over HTTP and
 checks the 188-byte framing here. If `ffprobe` is installed it also decodes a

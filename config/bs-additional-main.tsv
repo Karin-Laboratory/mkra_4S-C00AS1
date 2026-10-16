@@ -1,0 +1,6 @@
+type	network_id	service_id	transport_stream_id	freq_khz	name
+BS	4	161	4011	11727480	BS-TBS
+BS	4	171	4012	11727480	ＢＳテレ東
+BS	4	141	40D0	11957640	BS日テレ
+BS	4	181	40D1	11957640	BSフジ・181
+BS	4	101	40F1	11996000	NHK BS

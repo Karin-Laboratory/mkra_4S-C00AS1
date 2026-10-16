@@ -292,7 +292,8 @@ fn tuners_json(state: &AppState) -> String {
                 // replicates Mirakurun's tuner-selection logic conclude there
                 // is no usable tuner.
                 .arr("types", |t| {
-                    t.str(state.tuner_type());
+                    let types:std::collections::BTreeSet<_>=state.table.channels.iter().map(|c|c.ch_type()).collect();
+                    for kind in types {t.str(kind);}
                 })
                 // Mirakurun spawns an external command per tuner; mkra reads
                 // the driver in-process, so there is nothing to report.
@@ -719,6 +720,10 @@ fn stream(state: &AppState, req: &Request, out: &mut TcpStream, channel_key: &st
         first = sub.read(&mut buf, Duration::from_millis(200));
     }
 
+    if first==0 {
+        state.broker.unsubscribe(&session,&sub);
+        let _=respond_error(out,503,"TS source ended before producing data",false);return;
+    }
     if respond_stream_headers(out, &[("X-Mirakurun-Tuner-User-ID", user_id)]).is_err() {
         state.broker.unsubscribe(&session, &sub);
         return;
