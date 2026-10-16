@@ -1,0 +1,17 @@
+[Unit]
+Description=EPGStation (new-install example)
+Wants=network-online.target
+After=network-online.target bs4k-epg-proxy.service
+[Service]
+Type=simple
+User=epgstation
+Group=epgstation
+WorkingDirectory=/opt/EPGStation
+Environment=NODE_ENV=production
+Environment=TZ=Asia/Tokyo
+ExecStart=/usr/bin/node /opt/EPGStation/dist/index.js
+Restart=on-failure
+RestartSec=5s
+UMask=0027
+[Install]
+WantedBy=multi-user.target

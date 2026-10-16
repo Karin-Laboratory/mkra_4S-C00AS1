@@ -84,7 +84,7 @@ curl http://198.51.100.10:40772/api/services/400151/stream -o test.ts
 
 Mirakurun互換サーバはTCP **40772**。TVTestでは、Mirakurun対応BonDriver等の接続先を受信機に設定し、BS/BS4Kのチャンネルを読み込みます。画像で確認された他者の成功例と、本Forkの実測結果は区別してください。本ForkのTVTest環境全般の互換性は未検証です。
 
-EPGStationでは、[EPG連携手順](tools/epgstation/README.ja.md)に従い、別サーバ上のEIT収集・互換プロキシ（標準40773）を介します。EPGStationの`mirakurunPath`は通常`http://127.0.0.1:40773/`です。プロキシだけで既存環境の全設定を置き換えられるわけではありません。番組ID録画の終了処理と、必要に応じた2.10.0用パッチも確認してください。
+EPGStationの新規導入は[完全な導入手順](docs/EPGSTATION-INSTALL.ja.md)を参照してください。[EPGツール](tools/epgstation/README.ja.md)により、別サーバ上のEIT収集・互換プロキシ（標準40773）を介します。EPGStationの`mirakurunPath`は通常`http://127.0.0.1:40773/`です。プロキシだけで既存環境の全設定を置き換えられるわけではありません。番組ID録画の終了処理と、必要に応じた2.10.0用パッチも確認してください。
 
 ## 8. 実機検証結果
 
@@ -124,4 +124,13 @@ EPGStationでは、[EPG連携手順](tools/epgstation/README.ja.md)に従い、�
 - [EPGStation連携と制限](docs/EPGSTATION-BS2K.ja.md)
 - [自動再投入](docs/MKRA-AUTO-RESTORE.ja.md)
 - [開発履歴・公開監査](docs/PUBLICATION.ja.md)
-- [本家のABI資料](docs/ABI.md) / [本家のAPI資料](docs/API.md)
+- [ABI資料](docs/ABI.md) / [統合API資料](docs/API.md)
+
+### 追加監査で整備した資料
+
+- [通常BS6局・4K切替の匿名検証マトリクス](docs/VALIDATION-MATRIX.ja.md)
+- [スタンバイ・RAM・黒画面・競合・再投入の確認と復旧](docs/TROUBLESHOOTING.ja.md)
+- [完全版I-O DATAを含む3社更新ファイル比較](docs/OEM-FIRMWARE-COMPARISON.ja.md)
+- [現在の制限](docs/LIMITATIONS.md) / [統合版の構造](docs/HOW_IT_WORKS.md) / [API](docs/API.md) / [本体側導入](docs/SETUP.md)
+
+本家由来の過去の否定結果・説明は`docs/history/`に履歴として保持しています。

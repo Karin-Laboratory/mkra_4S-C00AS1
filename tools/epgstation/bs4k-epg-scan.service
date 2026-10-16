@@ -1,0 +1,13 @@
+[Unit]
+Description=Collect BS4K MMT-SI programmes for EPGStation
+Wants=network-online.target
+After=network-online.target bs4k-epg-proxy.service
+[Service]
+Type=oneshot
+User=bs4k-epg
+Group=bs4k-epg
+WorkingDirectory=/opt/bs4k-epg
+Environment=TZ=Asia/Tokyo
+EnvironmentFile=/etc/mkra/epg.env
+ExecStart=/usr/bin/flock -n -E 0 /var/lib/bs4k-epg/scan.lock /usr/bin/node /opt/bs4k-epg/scan-4k.cjs
+TimeoutStartSec=35min

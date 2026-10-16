@@ -25,6 +25,13 @@ jobs:
         run: |
           git fetch --unshallow || test "$(git rev-parse --is-shallow-repository)" = false
           python3 tools/audit_publication.py
+      - name: Check documentation and systemd distribution templates
+        run: |
+          python3 tools/check_docs.py
+          python3 -m compileall -q tools
+          mkdir -p target
+          cp tools/epgstation/epgstation.service.example target/epgstation.service
+          systemd-analyze verify --man=no tools/epgstation/bs4k-epg-proxy.service tools/epgstation/bs4k-epg-scan.service tools/epgstation/bs4k-epg-scan.timer tools/epgstation/bs2k-epg-scan.service tools/epgstation/bs2k-epg-scan.timer target/epgstation.service
       - name: Rust tests and static ARM build
         run: ./tools/build_unified.sh
       - name: Check host CLI without accessing hardware

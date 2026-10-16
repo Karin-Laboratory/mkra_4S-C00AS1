@@ -1,0 +1,19 @@
+[Unit]
+Description=mkra BS2K and BS4K EPG compatibility proxy
+Wants=network-online.target
+After=network-online.target
+[Service]
+Type=simple
+User=bs4k-epg
+Group=bs4k-epg
+WorkingDirectory=/opt/bs4k-epg
+EnvironmentFile=/etc/mkra/epg.env
+ExecStart=/usr/bin/node /opt/bs4k-epg/server.cjs
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+[Install]
+WantedBy=multi-user.target

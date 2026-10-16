@@ -1,0 +1,9 @@
+[Unit]
+Description=Refresh BS4K programme cache without overlapping BS2K scans
+[Timer]
+OnBootSec=8min
+OnUnitActiveSec=2h
+Persistent=true
+Unit=bs4k-epg-scan.service
+[Install]
+WantedBy=timers.target

@@ -8,5 +8,6 @@ User=bs4k-epg
 Group=bs4k-epg
 WorkingDirectory=/opt/bs4k-epg
 Environment=TZ=Asia/Tokyo
+EnvironmentFile=/etc/mkra/epg.env
 ExecStart=/usr/bin/flock -n -E 0 /var/lib/bs4k-epg/scan.lock /usr/bin/node /opt/bs4k-epg/scan-bs.cjs
 TimeoutStartSec=100
