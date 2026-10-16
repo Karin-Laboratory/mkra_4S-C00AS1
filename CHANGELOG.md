@@ -7,6 +7,7 @@
 - 匿名化検証表、新規EPG導入、非破壊的確認/段階的復旧を追加。
 - proxy/4K・2K scanner/timer/共通env/tmpfiles/EPGStation unit雛形を完備。
 - 4K scannerがplaceholderのstoredEvents=0で初回収集を止める不具合を修正し、合成回帰試験を追加。両scannerのEPGStation URLを共通envから指定可能にした。
+- CIではsetup-nodeの実パスを使う検証用unitコピーを作り、配布雛形の/usr/bin/nodeという導入先前提と区別する。
 - 実機・既存EPGStation・予約は変更せず、ローカル検証後に公開main/Actionsで確認する。旧公開コミットと開発原本を保持し、強制pushや本家PRは行わない。
 
 ## BS2K experimental preview — 2026-10-17

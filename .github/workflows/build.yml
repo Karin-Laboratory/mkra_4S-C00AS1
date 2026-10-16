@@ -29,9 +29,12 @@ jobs:
         run: |
           python3 tools/check_docs.py
           python3 -m compileall -q tools
-          mkdir -p target
-          cp tools/epgstation/epgstation.service.example target/epgstation.service
-          systemd-analyze verify --man=no tools/epgstation/bs4k-epg-proxy.service tools/epgstation/bs4k-epg-scan.service tools/epgstation/bs4k-epg-scan.timer tools/epgstation/bs2k-epg-scan.service tools/epgstation/bs2k-epg-scan.timer target/epgstation.service
+          # setup-node uses a tool-cache path; verify local copies against it.
+          mkdir -p target/systemd-verify
+          cp tools/epgstation/*.service tools/epgstation/*.timer target/systemd-verify/
+          cp tools/epgstation/epgstation.service.example target/systemd-verify/epgstation.service
+          python3 -c 'from pathlib import Path; import shutil; node=shutil.which("node"); assert node; [p.write_text(p.read_text().replace("/usr/bin/node",node)) for p in Path("target/systemd-verify").glob("*.service")]'
+          systemd-analyze verify --man=no target/systemd-verify/*.service target/systemd-verify/*.timer
       - name: Rust tests and static ARM build
         run: ./tools/build_unified.sh
       - name: Check host CLI without accessing hardware
