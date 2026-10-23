@@ -38,7 +38,7 @@ passive monitorは映像/音声デコードやMMT ES進行を検査しない。4
 
 ## CT141導入記録（2026-10-23 JST）
 
-基準branch `fix/epg-preserve-partial-scan-integrated-20261023` のソースを起点に、復旧記録commit `3e869d0`を含む新規branch `feat/epg-health-monitoring-safe-retry-20261024`で実装した。導入commitは`2265ae01f123940cb0701aea70d644631ba48d1c`。`/usr/local/bin/bs4k-health`の実機SHA-256は`a9177d49225e49cadbef6be4bd3773b593ec08f1b662ea9de1cccdf84bae3293`。
+基準branch `fix/epg-preserve-partial-scan-integrated-20261023` のソースを起点に、復旧記録commit `3e869d0`を含む新規branch `feat/epg-health-monitoring-safe-retry-20261024`で実装した。導入commitは`42cebdff268e4be1a13f05de14156620043deae7`。`/usr/local/bin/bs4k-health`の実機SHA-256は`313422a17a1c915424976809dd1e3369afc9c2e11467fa163772e5afc1e46415`。
 
 既存monitor timerを維持し、監視serviceを置換してoneshot実行を確認した。22:39 JSTの基準snapshotは`/var/lib/bs4k-epg/snapshots/baseline-20261023T223933+0900.json`。実測は`healthy`、failure/warningなし、8局のproxy/cache/SQLite件数は24時間・7日とも一致、SQLite integrityは`ok`。BS4K cacheは2,159件、4S PID 861、実行path `/tmp/mt/mkra-unified-auto`、binary SHA-256は期待値と一致、tuner free、OEM readiness true。録画0件、180秒以内の予約0件、scan lock free。monitorはストリームを開かず、TS取得状態は未試験と記録した。
 
