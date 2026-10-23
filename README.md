@@ -130,6 +130,8 @@ EPGStationの新規導入は[完全な導入手順](docs/EPGSTATION-INSTALL.ja.m
 
 - [通常BS6局・4K切替の匿名検証マトリクス](docs/VALIDATION-MATRIX.ja.md)
 - [スタンバイ・RAM・黒画面・競合・再投入の確認と復旧](docs/TROUBLESHOOTING.ja.md)
+- [CT141経由の4S接続経路](docs/4S-ACCESS-ROUTE.ja.md)
+- [4K選局・TSソース復旧 第2段階の調査記録](docs/4K-TS-RECOVERY-STAGE2-20261023.ja.md)
 - [完全版I-O DATAを含む3社更新ファイル比較](docs/OEM-FIRMWARE-COMPARISON.ja.md)
 - [現在の制限](docs/LIMITATIONS.md) / [統合版の構造](docs/HOW_IT_WORKS.md) / [API](docs/API.md) / [本体側導入](docs/SETUP.md)
 
