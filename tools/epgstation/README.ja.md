@@ -7,6 +7,7 @@
 | server.cjs | network4/11のcache統合、BS表示変換、番組stream終了制御 |
 | bs-eit.cjs / scan-bs.cjs | 通常BS6局のH-EIT解析/60秒収集 |
 | scan-4k.cjs | 4K各サービスを選局し、実際のprograms APIから取得 |
+| epg-cache.cjs | 4K cacheの検証・network/service/event単位merge・原子的保存 |
 | epg.env.example | 全3サービスのEnvironmentFile雛形。実IPは利用者が設定 |
 | bs4k-epg-proxy.service | localhost40773のproxy常駐 |
 | bs4k-epg-scan.service / .timer | 共通flock付き4K巡回、2時間周期 |
@@ -25,7 +26,7 @@ npm test --prefix tools/epgstation
 python3 -m compileall -q tools/epgstation
 ```
 
-合成EIT、ID/経路、番組EOF、placeholderカウンタ0での4K初回収集とbusy時cache保全を確認する。実機へは接続しない。
+合成EIT、ID/経路、番組EOF、placeholderカウンタ0での4K初回収集、局別partial、503/短TS/予約延期、旧cache保全、破損時停止、atomic writeを確認する。`status=complete`は全8サービスの観測を示すだけで、番組表の全時間範囲の網羅を示さない。実機へは接続しない。
 
 本体のstatus.storedEventsは0のplaceholderなのでscannerの起動条件にしない。4Kは各serviceの実programsから取得し、通常BSはCRC正常な放送H-EITだけを収集する。
 

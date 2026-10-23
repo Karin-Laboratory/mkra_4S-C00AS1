@@ -10,11 +10,14 @@ const CACHE = process.env.CACHE_FILE || "/var/lib/bs4k-epg/programs.json";
 
 function readCacheFile(file) {
   try { const x = JSON.parse(fs.readFileSync(file, "utf8")); return Array.isArray(x.programs) ? x.programs : []; }
-  catch (_) { return []; }
+  catch (error) { if (error.code !== "ENOENT") console.error(`EPG cache read failed (${file}): ${error.message}`); return []; }
 }
 function readCache() {
   const by=new Map();
-  for(const p of [...readCacheFile(CACHE),...readCacheFile(process.env.BS_CACHE_FILE||"/var/lib/bs4k-epg/bs-programs.json")]) by.set(p.id,p);
+  for(const p of [...readCacheFile(CACHE),...readCacheFile(process.env.BS_CACHE_FILE||"/var/lib/bs4k-epg/bs-programs.json")]) {
+    const key=`${Number(p.networkId)}:${Number(p.serviceId)}:${Number(p.eventId)}`;
+    by.set(key,p);
+  }
   return [...by.values()];
 }
 function queryPrograms(programs, query) {
