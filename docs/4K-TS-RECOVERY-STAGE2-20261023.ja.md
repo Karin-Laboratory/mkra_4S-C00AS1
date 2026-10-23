@@ -17,6 +17,9 @@ agent-101-vmからSSHでCT141 (`root@192.168.1.52`) に接続し、CT141から4S
 - 実行ファイルは984,708 bytes、SHA-256 `d5d8511cc530fd0c0375fca34f3604a2e8fd1cb76b49e819327ffe5a8d40a9f3`、MD5 `48a383d70c8e463eec7d5e54ccaf47cc`。
 - `/proc/828/wchan` は `inet_csk_accept`、3 threads、sleeping。採取時の `top` はmkraを約101% CPUと表示し、load averageは約27.5。これらは観測値であり、4K障害の原因と断定しない。
 - `/api/status`, `/api/tuners`, `/api/services` はHTTP 200。tunerはavailable/freeで、利用者・セッションなし。BS2KとBS4Kのサービス一覧を返した。
+- 21:57 JST時点で `/api/status` のstreamCountは0、sessionはnull。CT141の録画APIはactive records 0、現在有効な将来予約0、4K/2K scanner unitはいずれもinactive。
+- 既存CLIの `remux4k --discover-only` を1回実行した。これはドライバを開き、graphを読み、buffer `GET_STATUS` を呼び、作成処理の前に終了する読み取り専用経路。結果は `no live 4K ES pair found`。選局要求・チューナー操作・REMUX作成は行っていない。
+- CT141 watcherは45秒周期で動作し、API正常として `HEALTHY; no upload/start`。これは稼働確認であり、4K選局の回復を試すwatcherではない。
 - 生ログは265,279 bytes、SHA-256 `b428dddf3a817d3b1bcc670c6923e9a48cdc82b4c75da40956943d3df6517b7b`。予約・録画情報や生ログはGitへ収録していない。
 
 ## ログ時系列と確認できた原因
