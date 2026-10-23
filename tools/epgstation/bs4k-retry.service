@@ -1,0 +1,38 @@
+[Unit]
+Description=Guarded retry for a persistently incomplete BS4K EPG scan
+After=network-online.target bs4k-epg-proxy.service epgstation.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/bs4k-epg
+Environment=AUTO_RETRY=1
+Environment=MKRA_URL=http://192.168.1.51:40772
+Environment=PROXY_URL=http://127.0.0.1:40773
+Environment=EPGSTATION_URL=http://127.0.0.1:8888
+Environment=CACHE_FILE=/var/lib/bs4k-epg/programs.json
+Environment=BS_CACHE_FILE=/var/lib/bs4k-epg/bs-programs.json
+Environment=STATUS_FILE=/var/lib/bs4k-epg/status.json
+Environment=HEALTH_FILE=/var/lib/bs4k-epg/health.json
+Environment=RETRY_FILE=/var/lib/bs4k-epg/retry-state.json
+Environment=SCAN_LOCK=/var/lib/bs4k-epg/scan.lock
+Environment=EPGSTATION_DB=/opt/EPGStation/data/database.db
+Environment=WATCH_STATE=/var/lib/4s-mkra-watch/state.json
+Environment=EXPECTED_MKRA_VERSION=0.1.0
+Environment=EXPECTED_MKRA_SHA256=d5d8511cc530fd0c0375fca34f3604a2e8fd1cb76b49e819327ffe5a8d40a9f3
+ExecStart=/usr/local/bin/bs4k-health --retry
+TimeoutStartSec=30
+UMask=0027
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ReadWritePaths=/var/lib/bs4k-epg
+RestrictAddressFamilies=AF_UNIX AF_INET
+LockPersonality=yes
+MemoryMax=128M

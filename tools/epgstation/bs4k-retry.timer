@@ -1,0 +1,12 @@
+[Unit]
+Description=Check whether a guarded BS4K EPG retry is due
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+Unit=bs4k-retry.service
+
+[Install]
+WantedBy=timers.target

@@ -12,6 +12,8 @@
 | bs4k-epg-proxy.service | localhost40773のproxy常駐 |
 | bs4k-epg-scan.service / .timer | 共通flock付き4K巡回、2時間周期 |
 | bs2k-epg-scan.service / .timer | 同じflock付き通常BS巡回、30分周期 |
+| health.py / bs4k-monitor.service / .timer | passive EPG/cache/proxy/SQLite監視、局別差分とローテート付き記録 |
+| bs4k-retry.service / .timer | 安全条件・指数backoffを確認して既存4K scannerだけ再試行 |
 | bs4k-epg.tmpfiles.conf | 実行ユーザーのcache directoryと共通lockを作成 |
 | epgstation.service.example | 新規導入向けEPGStation常駐例 |
 | serialized-scan.conf | 既存4K unitを移行する場合のdrop-in例。新規unitと二重管理しない |
@@ -25,6 +27,8 @@ npm ci --ignore-scripts --prefix tools/epgstation
 npm test --prefix tools/epgstation
 python3 -m compileall -q tools/epgstation
 ```
+
+`test_health.py`はAPI 503/timeout、1局/複数局欠落、placeholder値、cache破損、30分空白候補、録画/予約/lock、4S起動直後、OEM readiness、backoff上限、3回失敗停止、正常復帰をモック検証する。監視はstream endpointを呼ばず、4SのTS取得を自動試験しない。運用仕様は[健全性監視と安全な再試行](../../docs/EPG-HEALTH-AND-RETRY.ja.md)。
 
 合成EIT、ID/経路、番組EOF、placeholderカウンタ0での4K初回収集、局別partial、503/短TS/予約延期、旧cache保全、破損時停止、atomic writeを確認する。`status=complete`は全8サービスの観測を示すだけで、番組表の全時間範囲の網羅を示さない。実機へは接続しない。
 

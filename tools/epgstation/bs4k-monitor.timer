@@ -1,0 +1,12 @@
+[Unit]
+Description=Sample BS4K/EPG health every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+Unit=bs4k-monitor.service
+
+[Install]
+WantedBy=timers.target
