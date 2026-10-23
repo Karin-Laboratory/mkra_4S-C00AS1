@@ -382,6 +382,13 @@ class HealthTests(unittest.TestCase):
         self.assertEqual(result["action"], "critical")
         self.assertTrue(health.read_json(health.RETRY_FILE)["paused"])
 
+    def test_37_seven_day_proxy_compare_excludes_eighth_day_events(self):
+        cache = health.read_json(health.CACHE_FILE)
+        cache["programs"].append({"networkId":11,"serviceId":101,"startAt":self.now+8*24*3600000,"endAt":self.now+8*24*3600000+1800000})
+        health.atomic_json(health.CACHE_FILE, cache)
+        report = self.collect_ok()
+        self.assertEqual(report["diffs"]["101"]["proxyVsSQLite7d"], 0)
+
 
 class MockResponse:
     status = 200

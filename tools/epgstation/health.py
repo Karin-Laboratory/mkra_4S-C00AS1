@@ -362,7 +362,8 @@ def collect(now_ms=None, fetch=request_json, include_device=True):
             failures.append("sqlite-integrity")
         for sid in TARGETS_4K:
             proxy24 = sum(1 for start, end in proxy_by[sid] if end > now_ms and start < now_ms + 24 * 3600 * 1000)
-            result["diffs"].setdefault(str(sid), {}).update({"proxyVsSQLite24h": proxy24 - counts.get("11:%d" % sid, 0), "proxyVsSQLite7d": len(proxy_by[sid]) - counts7.get("11:%d" % sid, 0)})
+            proxy7 = sum(1 for start, end in proxy_by[sid] if end > now_ms and start < now_ms + 7 * 24 * 3600 * 1000)
+            result["diffs"].setdefault(str(sid), {}).update({"proxyVsSQLite24h": proxy24 - counts.get("11:%d" % sid, 0), "proxyVsSQLite7d": proxy7 - counts7.get("11:%d" % sid, 0)})
     except Exception as exc:
         result["checks"]["sqlite"] = {"state": "unknown", "error": str(exc)[:160]}
         failures.append("sqlite")
