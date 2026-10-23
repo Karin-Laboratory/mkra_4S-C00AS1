@@ -474,7 +474,7 @@ def save_sample(report, baseline=False):
         if baseline:
             snapshots = HEALTH_FILE.parent / "snapshots"
             snapshots.mkdir(mode=0o750, parents=True, exist_ok=True)
-            stamp = dt.datetime.now().strftime("%Y%m%dT%H%M%S%z")
+            stamp = dt.datetime.now().astimezone().strftime("%Y%m%dT%H%M%S%z")
             atomic_json(snapshots / ("baseline-" + stamp + ".json"), report)
             for old in sorted(snapshots.glob("baseline-*.json"))[:-30]:
                 old.unlink()

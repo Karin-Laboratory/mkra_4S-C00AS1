@@ -35,3 +35,15 @@ CT141上で5分ごとに読み取り監視を実行し、`/var/lib/bs4k-epg/heal
 ## 既知の限界
 
 passive monitorは映像/音声デコードやMMT ES進行を検査しない。4K TS取得状態は「未試験」と明記する。通常BS2K scanのdeadlineはsystemd resultとcache鮮度で監視するが、再取得が成功するまで根本原因未解決と扱う。7日間のデータはSQLite直接参照で比較し、EPGStationのUI/APIが全7日を実際に返すこととは区別する。
+
+## CT141導入記録（2026-10-23 JST）
+
+基準branch `fix/epg-preserve-partial-scan-integrated-20261023` のソースを起点に、復旧記録commit `3e869d0`を含む新規branch `feat/epg-health-monitoring-safe-retry-20261024`で実装した。導入commitは`3b79c45e519654578511439a9399aecd6472bba5`。`/usr/local/bin/bs4k-health`の実機SHA-256は`049afd31950684de7682c6a8e3b6c2ee103a6bc36d9ab03d15e78a1ae0b00b7b`。
+
+既存monitor timerを維持し、監視serviceを置換して1回のoneshot実行を確認した。22:39 JSTの基準snapshotは`/var/lib/bs4k-epg/snapshots/baseline-20261023T223933.json`。実測は`healthy`、failure/warningなし、8局のproxy/cache/SQLite件数は24時間・7日とも一致、SQLite integrityは`ok`。BS4K cacheは2,159件、4S PID 861、実行path `/tmp/mt/mkra-unified-auto`、binary SHA-256は期待値と一致、tuner free、OEM readiness true。録画0件、180秒以内の予約0件、scan lock free。monitorはストリームを開かず、TS取得状態は未試験と記録した。
+
+独立バックアップは`/var/backups/epg-health-monitor-20261023T223631+0900`、manifest SHA-256 `f023425965a4cab6a6b1138080a45f7ec7c871cb4d4b4d6e1bdfccc504ca3021`。24ファイルのバックアップhashを照合し、EPGStation DBはSQLite backup APIで複製して`integrity_check=ok`を確認した。保全時のDBはprogram 3,650、recorded 21、reserve 3、video_file 21。現行health cache、監視ログ、既存サービス、scanner、watcher、設定をバックアップした。
+
+監視差し替え前に実配備コードとリポジトリを比較した。live `bs-eit.cjs`と`epg-cache.cjs`は一致。live `scan.cjs`は基準`scan-4k.cjs`と実接続先の既定値以外同じで、status schemaも一致。live `scan-bs.cjs`はBS cache、取得/録画安全判定、収集構造を維持し、接続先を実機値へ固定している。live `server.cjs`には既存EPGStation向けSSE `/api/events`、genre正規化、cache ID解決とprogram-stream動作差がある。live watcherはbinary/config pinと接続先を埋め込みにしている。これらの本番固有ファイルは上書きしていない。既存のdirtyなローカル作業treeも変更していない。
+
+既存BS2K timerは22:32:56–22:33:58 JSTに正常終了し、6局のH-EITを取得した。直前の`scan deadline`の根因は未確定で、monitor/retry実装でscanner本体を変更していない。retry timerは現行健康状態確認後に有効化したが、初回判定はdeferred/no retryで、scannerは起動していない。正常時mkraを停止・再起動していない。
