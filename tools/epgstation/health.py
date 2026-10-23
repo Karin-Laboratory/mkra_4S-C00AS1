@@ -375,7 +375,8 @@ def collect(now_ms=None, fetch=request_json, include_device=True):
         result["checks"]["device"] = device_snapshot(api_status)
         expected_hash = EXPECTED_MKRA_SHA256
         actual_hash = result["checks"]["device"].get("mkraSha256")
-        result["checks"]["device"]["mkraHashMatch"] = bool(expected_hash and actual_hash == expected_hash)
+        expected_path = "/tmp/mt/mkra-unified-auto"
+        result["checks"]["device"]["mkraHashMatch"] = bool(expected_hash and actual_hash == expected_hash and result["checks"]["device"].get("executable") == expected_path)
         if expected_hash and not result["checks"]["device"]["mkraHashMatch"]:
             result["warnings"].append("mkra-binary-hash-mismatch-or-unconfirmed")
     active_scan = any(units[n].get("active") in ("active", "activating", "deactivating") for n in ("bs4k-epg-scan.service", "bs2k-epg-scan.service"))
