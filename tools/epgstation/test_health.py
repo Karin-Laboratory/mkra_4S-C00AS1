@@ -352,7 +352,7 @@ class HealthTests(unittest.TestCase):
                 if "/proc/123/exe" in command: return "lrwxrwxrwx 1 root root 0 -> /tmp/mt/mkra-unified-auto"
                 if "/proc/123/cmdline" in command: return "serve\x00--remux4k\x00--tune\x00channel-name-secret"
                 if command.startswith("sha256sum"): return "a"*64+" /tmp/mt/mkra-unified-auto"
-                if command.startswith("tail "): return "serviceId=101 MPT ADSB timeout title-is-private"
+                if command.startswith("tail "): return "serviceId=101 MPT ADSB title-is-private\nES ring advancing\nError: timeout title-is-private"
                 return ""
             def close(self): pass
         fake = FakeTelnet()
@@ -364,6 +364,7 @@ class HealthTests(unittest.TestCase):
         self.assertIn("101", encoded)
         self.assertNotIn("title-is-private", encoded)
         self.assertNotIn("channel-name-secret", encoded)
+        self.assertEqual(snapshot["nativeLogIndicators"]["errorCategories"], ["timeout"])
 
     def test_35_bs2k_failure_alone_never_triggers_4k_retry(self):
         report = self.retry_report()

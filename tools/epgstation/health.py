@@ -249,7 +249,8 @@ def device_snapshot(api_status):
                 indicators["videoEsRing"] = "mentioned-unconfirmed" if re.search(r"video.{0,40}ring|ring.{0,40}video", joined, re.I) else "unconfirmed"
                 indicators["audioEsRing"] = "mentioned-unconfirmed" if re.search(r"audio.{0,40}ring|ring.{0,40}audio", joined, re.I) else "unconfirmed"
                 indicators["timeoutMentioned"] = bool(re.search(r"timeout|deadline", joined, re.I))
-                indicators["errorCategories"] = [term for term in ("settle", "source", "MPT", "ADSB", "ES", "timeout", "503") if re.search(re.escape(term), joined, re.I)]
+                error_lines = "\n".join(line for line in lines if re.search(r"error|failed|failure|timeout|deadline|panic", line, re.I))
+                indicators["errorCategories"] = [term for term in ("settle", "source", "MPT", "ADSB", "ES", "timeout", "503") if re.search(re.escape(term), error_lines, re.I)]
             except Exception:
                 pass
         finally:
