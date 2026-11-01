@@ -103,11 +103,38 @@ const fn sub(cmd: c_int, sub: c_int) -> c_int {
     (sub << 16) | cmd
 }
 
+/// Raw read-window logging is useful for bounded diagnostics but fills tmpfs
+/// during a continuous server session. Lifecycle/error messages remain enabled.
+pub static TRACE_READS:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(true);
 fn log_raw_words(label: &str, words: &[u32]) {
+    if label.starts_with("host_read") && !TRACE_READS.load(std::sync::atomic::Ordering::Relaxed) {return;}
     eprintln!(
         "xcdrv: t_ms={} {label} raw words={words:08x?}",
         sys::unix_time_ms()
     );
+}
+
+/// Three configuration MMRs decoded through kernel config_tsi@cc1c.
+/// Status/CRC registers are deliberately not part of the rollback image.
+#[derive(Debug)]
+pub struct TsiMappingSnapshot {
+    registers: [u32; 3],
+    requests: [[u32; 10]; 2],
+}
+
+fn decode_physical_tsi(port: u32, registers: [u32; 3]) -> io::Result<[u32; 10]> {
+    if port > 1 { return Err(io::Error::other("snapshot supports physical TSI0/1 only")); }
+    let [control, electrical, drop] = registers;
+    let bit = |word: u32, offset: u32| (word >> (offset + port)) & 1;
+    let packet_bits = [bit(control, 0), bit(control, 14), bit(control, 12)];
+    if packet_bits.iter().sum::<u32>() > 1 {
+        return Err(io::Error::other("conflicting physical TSI packet selectors"));
+    }
+    let packet = if packet_bits[0] != 0 {2} else if packet_bits[1] != 0 {1}
+                 else if packet_bits[2] != 0 {3} else {0};
+    Ok([port, packet, if port == 0 {(control >> 8) & 1} else {0},
+        bit(control,24), bit(control,16), bit(electrical,0), bit(electrical,8),
+        bit(electrical,16), bit(electrical,24), bit(drop,8)])
 }
 
 /// Request emitted by the product's only `xc_mini_device_config_tsi` call.
@@ -134,7 +161,7 @@ const fn ts_recorder_tsi_request(device: u32, port: u32) -> [u32; 4] {
 
 /// Physical TSI setup issued by `abs` before it creates its MPEG-TS demux.
 ///
-/// `abs:0x2874e8` builds `tsd_configure_t {enable=1, parallel=0, packet=0,
+/// `abs:0x287568..0x2875c6` builds `tsd_configure_t {enable=1, parallel=0, packet=0,
 /// use_sync=0, negative_edge=1, active_high=1, keep_null=1}` and calls
 /// `setup_tsi_port`. The caller's spro/system discriminator maps system 0 to
 /// physical TSI0 and system 2 (BS/CS 2K) to physical TSI1 before this helper.
@@ -190,10 +217,9 @@ const fn product_physical_tsi_request(port: u32, me_packet: u32, use_sync: bool)
 /// the vendor `tsconfig` default.  Following `{1,0,0,0,1,0,1}` through
 /// `xcode_io_t::setup_tsi_port@0x8e00c` gives this request.
 ///
-/// Word 6 (`use_sync_signal`) is not ambiguous: the constructor explicitly
-/// sets the corresponding configuration word to zero.  The product DEMUX
-/// request above sets it to one and must not be described as the same
-/// lifecycle.
+/// Physical-request word 6 (`active_high`, mapped from tsd_configure_t word 5)
+/// is zero in this SDK constructor and one in the product DEMUX request.
+/// Both requests leave physical-request word 4 (`use_sync`) at zero.
 const fn ts_recorder_physical_tsi_request(port: u32) -> [u32; 10] {
     [port, 0, 0, 1, 0, 0, 0, 0, 1, 0]
 }
@@ -411,11 +437,11 @@ const fn remux_add_stream_request(
     [device, connection, program, pid, stream_id, ext_stream_type, 0]
 }
 
-/// `adsb` always pairs `remux_remove_stream(conn, flag)` with a following
-/// `disconnect`, never the reverse. Flag 1 is used for video and audio
-/// connections (`adsb:0x42e2a`, `0x42e56`); -1 is used for PSI and PES.
-const fn remux_remove_stream_request(device: u32, connection: u32, flag: u32) -> [u32; 3] {
-    [device, connection, flag]
+/// Remove a connection from one REMUX program. libvixs at 0x7f8c4 labels
+/// word2 `m_program_number`, not a flag. Native callers use literal 1 when
+/// their program is 1, or -1 for a wildcard. It must match add_stream here.
+const fn remux_remove_stream_request(device: u32, connection: u32, program: u32) -> [u32; 3] {
+    [device, connection, program]
 }
 
 const fn remux_remove_program_request(device: u32, program: u32) -> [u32; 2] {
@@ -592,6 +618,13 @@ impl XcDrv {
         Ok(())
     }
 
+    /// libvixs:7d908 and kernel:2b958 use a value-passed 4B handle (0x8e).
+    /// The loopback diagnostic calls this only for its own new pipeline.
+    pub fn start_diagnostic_pipeline(&self, pipeline: u32) -> io::Result<()> {
+        unsafe { sys::ioctl_value(self.fd(), 0x8e, pipeline)? };
+        Ok(())
+    }
+
     pub fn stop_pipeline(&self, pipeline: u32) -> io::Result<()> {
         unsafe { sys::ioctl_value(self.fd(), PIPELINE_STOP, pipeline)? };
         Ok(())
@@ -609,6 +642,99 @@ impl XcDrv {
     pub fn set_av_sync_live_mode(&self, av_sync: u32) -> io::Result<()> {
         let mut req = av_sync_live_mode_request(av_sync);
         unsafe { self.call(AV_SYNC_SET_SYNC_MODE, &mut req)? };
+        Ok(())
+    }
+
+    /// Memory-input diagnostic: one owned input port, no physical TSI route.
+    pub fn create_memory_ts_demux(&self) -> io::Result<u32> {
+        let mut req = [0x0c, 1, 32, 0, 0, 0];
+        log_raw_words("memory DEMUX create request", &req);
+        unsafe { self.call(SDEV_CREATE, &mut req)? };
+        if req[4] == 0 { return Err(io::Error::other("memory DEMUX handle 0")); }
+        Ok(req[4])
+    }
+
+    /// OEM ABS:285218..285232 creates LOCAL_DEMUX type 6 with one input,
+    /// 48 outputs and no control ports. Distinct from the TSI DEMUX type 12.
+    pub fn create_local_ts_demux(&self) -> io::Result<u32> {
+        let mut req = [6, 1, 48, 0, 0, 0];
+        log_raw_words("LOCAL_DEMUX create request", &req);
+        unsafe { self.call(SDEV_CREATE, &mut req)? };
+        if req[4] == 0 { return Err(io::Error::other("LOCAL_DEMUX handle 0")); }
+        Ok(req[4])
+    }
+
+    /// Diagnostic SYSTEM/TTS (3) input ring, following the native ISS media
+    /// subtype as a hypothesis; LOCAL_DEMUX acceptance is tested separately.
+    pub fn create_diagnostic_tts_buffer(&self) -> io::Result<u32> {
+        let mut req = [3, 1, 3, 1, 0x1000, 0x6000, 192, 3, 0];
+        log_raw_words("diagnostic TTS ring request", &req);
+        unsafe { self.call(SBUF_CREATE, &mut req)? };
+        if req[8] == 0 { return Err(io::Error::other("TTS ring handle 0")); }
+        Ok(req[8])
+    }
+
+    /// Vendor 0x39: 8B buffer/writer; use on diagnostic-owned buffers only.
+    pub fn create_diagnostic_writer(&self, buffer: u32) -> io::Result<u32> {
+        let mut req = [buffer, 0];
+        unsafe { self.call(0x39, &mut req)? };
+        if req[1] == 0 { return Err(io::Error::other("writer handle 0")); }
+        Ok(req[1])
+    }
+
+    pub fn destroy_diagnostic_writer(&self, writer: u32) -> io::Result<()> {
+        unsafe { sys::ioctl_value(self.fd(), 0x3a, writer)? };
+        Ok(())
+    }
+
+    /// 44B get_write and 24B commit_write, verified against the OEM kernel
+    /// handlers and libvixs:7e430/7e660. Bounded single contiguous transfer.
+    /// Caller must own both the buffer and writer; never pass a native writer.
+    pub fn write_diagnostic_ts(&self, writer: u32, data: &[u8], packet: usize, described: bool) -> io::Result<()> {
+        if !matches!(packet, 188 | 192) || data.is_empty() || data.len() > packet * 1024 || data.len() % packet != 0 {
+            return Err(io::Error::other("invalid diagnostic TS size"));
+        }
+        // Word 3 is requested descriptor bytes (not a reserved word).
+        // ABS:26db76 sets 128; 26e65e passes it as the fifth API argument.
+        let mut req = [writer, data.len() as u32, 0, if described {128} else {0}, 1, 500, 0, 0, 0, 0, 0];
+        unsafe { self.call(0x3d, &mut req)? };
+        log_raw_words("diagnostic get_write", &req);
+        // A fresh large buffer must offer an unwrapped window. Reject other
+        // shapes rather than infer the driver's wrapped-write size semantics.
+        if req[7] < data.len() as u32 || req[9] != 0 {
+            return Err(io::Error::other("diagnostic write is not contiguous"));
+        }
+        let addr=req[6];
+        let len=data.len() as u32;
+        let user=crate::sys::user_mapping_contains(addr, data.len());
+        let mapped=if user { addr } else {
+            if addr < 0x1f000000 || addr.checked_add(len).is_none_or(|end|end>0x29000000) {
+                return Err(io::Error::other("diagnostic write outside host aperture"));
+            }
+            self.map(addr, len)?
+        };
+        unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), mapped as usize as *mut u8, data.len()); }
+        if !user { self.unmap(mapped, len)?; }
+        if described {
+            let desc = req[10];
+            if desc & 3 != 0 || !crate::sys::user_mapping_contains(desc, 128) {
+                return Err(io::Error::other("owned descriptor is unaligned or not user mapped"));
+            }
+            // Fixed-size native media descriptor, no PTS/DTS claims. ABS:
+            // 26e69c size, 26e6a6 attr size, 26e6c6 SYSTEM, 26e6e6 TTS,
+            // 26e724 sequence marker, 26e730 attribute-present flag 0x100.
+            let mut words = [0u32; 32];
+            words[0] = 128;
+            words[1] = addr;
+            words[3] = 0x100;
+            words[29] = 12;
+            words[30] = 1;
+            words[31] = if packet == 192 {3} else {2};
+            unsafe { std::ptr::copy_nonoverlapping(words.as_ptr(), desc as usize as *mut u32, 32); }
+            log_raw_words("owned input media descriptor", &words);
+        }
+        let mut commit=[writer,addr,len,req[10],0,0];
+        unsafe { self.call(0x3e, &mut commit)? };
         Ok(())
     }
 
@@ -813,8 +939,8 @@ impl XcDrv {
         Ok(())
     }
 
-    pub fn remux_remove_stream(&self, device: u32, connection: u32, flag: u32) -> io::Result<()> {
-        let mut req = remux_remove_stream_request(device, connection, flag);
+    pub fn remux_remove_stream(&self, device: u32, connection: u32, program: u32) -> io::Result<()> {
+        let mut req = remux_remove_stream_request(device, connection, program);
         log_raw_words("REMUX remove_stream request", &req);
         unsafe { self.call(REMUX_REMOVE_STREAM, &mut req)? };
         Ok(())
@@ -847,7 +973,19 @@ impl XcDrv {
         me_packet: u32,
         use_sync: bool,
     ) -> io::Result<()> {
+        self.configure_physical_tsi_polarity(port, me_packet, use_sync, true, true, false)
+    }
+
+    /// Bounded electrical-interface experiment. Only the documented clock
+    /// edge, VALID polarity and parallel/serial fields differ from the product request.
+    pub fn configure_physical_tsi_polarity(
+        &self, port: u32, me_packet: u32, use_sync: bool,
+        negative_edge: bool, active_high: bool, parallel: bool,
+    ) -> io::Result<()> {
         let mut req = product_physical_tsi_request(port, me_packet, use_sync);
+        req[2] = u32::from(parallel);
+        req[6] = u32::from(active_high);
+        req[8] = u32::from(negative_edge);
         log_raw_words("physical TSI config request", &req);
         unsafe { self.call(TSI_CONFIG, &mut req)? };
         Ok(())
@@ -872,6 +1010,53 @@ impl XcDrv {
     pub fn configure_ts_recorder_physical_tsi(&self, port: u32) -> io::Result<()> {
         let mut req = ts_recorder_physical_tsi_request(port);
         unsafe { self.call(TSI_CONFIG, &mut req)? };
+        Ok(())
+    }
+
+    pub fn snapshot_tsi_mapping(&self) -> io::Result<TsiMappingSnapshot> {
+        if self.mmr_read32(0x61f0)? != 0x10 {
+            return Err(io::Error::other("TSI mapping is not the measured identity 0x10"));
+        }
+        let registers = [self.mmr_read32(0x6000)?, self.mmr_read32(0x6008)?, self.mmr_read32(0x600c)?];
+        Ok(TsiMappingSnapshot {registers, requests: [decode_physical_tsi(0,registers)?, decode_physical_tsi(1,registers)?]})
+    }
+
+    /// One bounded hypothesis: logical input 1 consumes physical input 0.
+    /// config_ex's eleventh word selects physical ASI; no MMIO writes here.
+    pub fn map_tsi_one_to_zero(&self) -> io::Result<()> {
+        if self.mmr_read32(0x61f0)? != 0x10 {
+            return Err(io::Error::other("TSI remap compare-before-write failed"));
+        }
+        let registers = [self.mmr_read32(0x6000)?, self.mmr_read32(0x6008)?, self.mmr_read32(0x600c)?];
+        let physical = decode_physical_tsi(0,registers)?;
+        let mut req = [0u32;11];
+        req[..10].copy_from_slice(&physical);
+        req[0]=1; req[10]=0;
+        log_raw_words("logical TSI1 to physical TSI0 config_ex", &req);
+        unsafe { self.call(0x53, &mut req)? };
+        if self.mmr_read32(0x61f0)? != 0 {
+            return Err(io::Error::other("TSI remap readback differs"));
+        }
+        Ok(())
+    }
+
+    pub fn restore_tsi_mapping(&self, saved: &TsiMappingSnapshot) -> io::Result<()> {
+        let current = self.mmr_read32(0x61f0)?;
+        if !matches!(current, 0 | 0x10) {
+            return Err(io::Error::other("foreign TSI mapping change; refusing overwrite"));
+        }
+        let mut req = [0u32;11];
+        req[..10].copy_from_slice(&saved.requests[1]); req[10]=1;
+        log_raw_words("restore logical TSI1 identity and physical TSI1", &req);
+        unsafe {self.call(0x53, &mut req)?};
+        let mut physical = saved.requests[0];
+        log_raw_words("restore physical TSI0", &physical);
+        unsafe {self.call(TSI_CONFIG, &mut physical)?};
+        let actual = [self.mmr_read32(0x6000)?,self.mmr_read32(0x6008)?,self.mmr_read32(0x600c)?];
+        if actual != saved.registers || self.mmr_read32(0x61f0)? != 0x10 {
+            return Err(io::Error::other(format!("TSI rollback readback differs: {actual:08x?} expected {:08x?}", saved.registers)));
+        }
+        eprintln!("TSI rollback: configuration MMRs and identity mapping exactly restored");
         Ok(())
     }
 
@@ -1491,6 +1676,26 @@ mod tests {
         // Class 11 * 100 + index, the encoding `xc_sdev_info_func` decodes.
         assert_eq!(REMUX_CONFIG >> 16, 11 * 100);
         assert_eq!(SDEV_CONNECT_INPUT, 0x0007_002a);
+    }
+
+    #[test]
+    fn tsi_rollback_decodes_the_measured_4k_configuration() {
+        let registers = [0x01000000, 0x01000100, 0x200];
+        assert_eq!(decode_physical_tsi(0,registers).unwrap(),[0,0,0,1,0,0,1,0,1,0]);
+        assert_eq!(decode_physical_tsi(1,registers).unwrap(),[1,0,0,0,0,0,0,0,0,1]);
+        // Historical both-port diagnostic snapshot, rather than an encoder
+        // round trip: both enabled, both active-high/falling, no drop-null.
+        assert_eq!(decode_physical_tsi(1,[0x03000000,0x03000300,0]).unwrap(),[1,0,0,1,0,0,1,0,1,0]);
+    }
+
+    #[test]
+    fn tsi_rollback_rejects_ambiguous_packet_configuration() {
+        assert!(decode_physical_tsi(2,[0,0,0]).is_err());
+        assert!(decode_physical_tsi(0,[0x1001,0,0]).is_err());
+        assert!(decode_physical_tsi(1,[0xa000,0,0]).is_err());
+        for (port,word,packet) in [(0,0x4000,1),(1,0x8000,1),(0,1,2),(1,2,2),(0,0x1000,3),(1,0x2000,3)] {
+            assert_eq!(decode_physical_tsi(port,[word,0,0]).unwrap()[1],packet);
+        }
     }
 
     #[test]
