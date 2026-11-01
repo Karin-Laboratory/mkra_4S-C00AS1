@@ -225,3 +225,104 @@ API; the code does not scan and destroy unknown handles.
   read-only graph/TSI baseline plus recovery owner is recorded. The failed
   attempt's unresolved graph/TSI state must first be handled through an
   independently approved recovery plan; this patch does not clear that state.
+
+### Read-only post-failure hardware audit (2026-11-02): NO-GO
+
+This audit used the previously documented management route and guarded
+read-only helper. It did not tune, write TSI/MMR, create or destroy graph
+objects, upload or execute a binary, stop a process, restart a service, or
+reset the receiver. The raw capture is retained privately; this report omits
+host addresses, credentials, process IDs, graph handles, and reservation
+details.
+
+#### Management host and receiver
+
+- The management host was reachable. Its watcher timer was waiting; the
+  watcher service had completed healthy checks without uploading or starting
+  anything. The BS2K EPG scanner was failed (last start 05:34 JST); the BS4K
+  scanner was inactive and the proxy was active.
+- EPGStation returned no active recording and no upcoming reservation. The
+  receiver API reported version 0.1.0, zero tuner-device/TS-filter/decoder
+  streams, and an available, non-faulted, unused tuner with no users.
+- OEM `tuner`, `card`, `abs`, and `adsb` processes were present. The integrated
+  mkra server remained running, held the shared frontend flock, and had open
+  `xcodedrv` descriptors. The API's free/unused state therefore did not prove
+  exclusive hardware ownership. The 2026-11-01 test binary remained staged;
+  this audit did not execute it.
+- The four OEM fingerprints checked by the capture guard matched their
+  expected values. The XCode driver banner reported version 3.0.0.0.73.00.
+  No firmware mismatch was observed.
+
+#### TSI state and dated baseline
+
+Before running the tools, their current CLI paths were checked against source.
+`tsi-mmr` only reads the fixed MMR words and the documented read-only TSI
+status ioctl. The wrapper opens the driver descriptor in read/write mode, but
+this invocation uses only the read ioctls and the `0x7a`/`0x7b` per-process
+buffer map/unmap; it issues no configuration or graph mutation ioctl.
+`graph --sniff` reads the driver graph and buffer pages. The frontend read used
+the source-verified tuner ELF address through the read-only process-memory peek
+path.
+
+The observed TSI values were:
+
+| Register/status | 2026-11-02 | Saved 2026-10-16 post-capture baseline |
+| --- | ---: | ---: |
+| MMR `0x6000` | `0x01000000` | `0x01000000` |
+| MMR `0x6004` | `0x00000001` | `0x00000001` |
+| MMR `0x6008` | `0x01000100` | `0x01000100` |
+| MMR `0x600c` | `0x00000200` | `0x00000200` |
+| MMR `0x61f0` crossbar | `0x00000010` | `0x00000010` |
+| TSI0 | locked, CRC `0x45` | locked, CRC `0x43` |
+| TSI1 | unlocked, CRC `0xee` | unlocked, CRC `0xee` |
+
+The stable physical-TSI and crossbar words match the dated successful
+post-capture snapshot. The TSI0 CRC is a live counter and is not expected to
+remain constant. This is evidence that the current TSI mapping matches that
+known-good state. Decoding the physical-port words with the checked-in helper
+gives TSI0 `[0,0,0,1,0,1,1,0,0,0]` and TSI1
+`[1,0,0,0,0,0,0,0,0,1]`. This does not identify who owns the current graph.
+
+#### Frontend assignment and graph
+
+The read-only tuner memory peek returned `2` for `aDevOfPath[1]`, which the
+current source interprets as the legacy ISDB-S assignment. A saved
+2026-10-16 post-capture read from the same unit and verified tuner image
+returned `0x200` for that word (native path). The difference is real and is
+consistent with the failed attempt leaving the frontend assigned to ISDB-S.
+It does not prove that causal link: the original attempt lacks a first-failure
+stage log, and no pre-attempt value for this word was recorded. The current
+source's raw-capture preflight would refuse to start when this assignment is
+already legacy ISDB-S.
+
+The current driver graph reported 11 devices, 12 buffers, 2 pipelines, and 15
+ports. The table exposed 13 candidate buffer addresses, of which 8 passed the
+buffer-object magic/read check; these readings do not prove ownership. The
+historical known-good active-4K graph was 22/32/2/73, while a documented
+standby summary reported 11 devices and 9 buffers. These are different native
+states and do not provide an exact same-state graph baseline. Two pipelines
+alone are not evidence of a leftover: that count also appears in historical
+graphs. **Graph ownership and whether any object is residual remain UNKNOWN.**
+No suspected object was cleared.
+
+#### Error 1032, recovery plan, and decision
+
+No new evidence explains OS error 1032. The saved failure associates it with
+the logical-TSI1 restore ioctl `0x53`, but does not establish the first failing
+operation in setup. The code and available ABI notes still do not define the
+meaning of 1032. The current kernel log contained no new matching error.
+
+No recovery was attempted. Before another capture, use a separately approved
+maintenance window: establish that recordings, viewing, reservations, and
+other owners are absent; review a frontend restoration path against the
+current firmware; then collect a new read-only graph/TSI snapshot. Do not
+destroy graph objects based on counts or handles. If ownership still cannot
+be attributed against a comparable baseline, keep the receiver out of
+capture testing and have the device owner decide the recovery path. Any
+restoration write, service stop, or reset requires its own authorization and
+rollback plan.
+
+**Decision: NO-GO.** The integrated server currently owns the shared frontend
+lock, the frontend assignment differs from the saved native-path observation,
+and a comparable graph baseline is unavailable. No new BS2K attempt is
+authorized by this audit.
