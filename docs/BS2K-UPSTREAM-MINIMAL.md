@@ -79,3 +79,41 @@ operation of this extracted branch**.
 - A failed graph teardown must not silently be treated as a clean restart.
 - 2K-to-4K native HDMI restoration remains unverified; HTTP streaming
   restoration and HDMI recovery are different.
+
+### Device attempt (2026-11-01): FAIL; stopped after cleanup error
+
+This is a single bounded attempt on the documented test receiver. It does not
+change the historic 2026-10-16 capture result above.
+
+- **Build:** PR branch HEAD `e8a0b654d921cbc7062a7635eb72c3fa518c3715` passed
+  `cargo test --locked` (202 passed, 0 failed) and the ARMv7 musl release
+  build. The resulting binary was a statically linked ARM EABI5 ELF, SHA-256
+  `6c1dbe9882fa929bf13a89d8567500088998c54cb7c96841abe60b745787bb90`.
+- **Preflight:** the OEM tuner/driver/library fingerprints matched the
+  implementation's expected firmware guard; the API reported the tuner free,
+  with no active recording and no active tuner users. No future reservation
+  was due during the attempt. The existing integrated `serve` process and
+  watcher were left running. The BS2K EPG scanner was already in a failed,
+  inactive state.
+- **Staging:** copied the test binary to a new `/tmp/mt` filename without
+  replacing the integrated binary. The receiver-side SHA-256 matched the
+  build host. The staged file remains in receiver RAM for diagnosis.
+- **Attempt:** ran one 5-second BS Asahi `bs2k-raw` command at RF
+  `11727480` kHz / TSID `0x4010`. It exited unsuccessfully while restoring the
+  logical TSI1 identity / physical TSI1 raw words, reporting OS error 1032,
+  followed by `cleanup_ok=false` and “device state requires inspection”.
+  The expected output TS file was absent; **0 TS bytes were captured**.
+- **Afterward:** no test process remained; the OEM `tuner`, `card`, `abs`, and
+  `adsb` processes remained present. The read-only API still reported the
+  tuner free and not faulted. A documented read-only graph snapshot showed two
+  pipelines and multiple buffers; without a known baseline for this precise
+  state, that snapshot cannot establish whether the failed test graph was
+  fully released. No recovery, retune, reset, or retry was attempted.
+- **Result:** real-device raw TS reception is **FAIL** for this attempt.
+  Packet sync, TSID, PAT, PMT, TEI, continuity counters, and PSI/SI CRC are
+  **UNKNOWN** because there is no output sample. TSI restoration and complete
+  graph cleanup are **UNKNOWN / unresolved**. HDMI state was not verified and
+  must not be described as restored. Stop further tuning until the device
+  state and a safe recovery path are independently established.
+
+No receiver IPs, credentials, recordings, or TS payloads are included here.
