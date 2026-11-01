@@ -226,7 +226,7 @@ API; the code does not scan and destroy unknown handles.
   attempt's unresolved graph/TSI state must first be handled through an
   independently approved recovery plan; this patch does not clear that state.
 
-### Read-only post-failure hardware audit (2026-11-02): NO-GO
+### Read-only post-failure hardware audit (2026-11-02 05:46–05:51 JST): NO-GO
 
 This audit used the previously documented management route and guarded
 read-only helper. It did not tune, write TSI/MMR, create or destroy graph
@@ -278,9 +278,9 @@ The observed TSI values were:
 
 The stable physical-TSI and crossbar words match the dated successful
 post-capture snapshot. The TSI0 CRC is a live counter and is not expected to
-remain constant. This is evidence that the current TSI mapping matches that
-known-good state. Decoding the physical-port words with the checked-in helper
-gives TSI0 `[0,0,0,1,0,1,1,0,0,0]` and TSI1
+remain constant. This is evidence that the observed mapping matched that
+known-good state at that collection time. Decoding the physical-port words
+with the checked-in helper gives TSI0 `[0,0,0,1,0,1,1,0,0,0]` and TSI1
 `[1,0,0,0,0,0,0,0,0,1]`. This does not identify who owns the current graph.
 
 #### Frontend assignment and graph
@@ -295,7 +295,7 @@ stage log, and no pre-attempt value for this word was recorded. The current
 source's raw-capture preflight would refuse to start when this assignment is
 already legacy ISDB-S.
 
-The current driver graph reported 11 devices, 12 buffers, 2 pipelines, and 15
+The 05:49 JST driver graph reported 11 devices, 12 buffers, 2 pipelines, and 15
 ports. The table exposed 13 candidate buffer addresses, of which 8 passed the
 buffer-object magic/read check; these readings do not prove ownership. The
 historical known-good active-4K graph was 22/32/2/73, while a documented
@@ -307,10 +307,11 @@ No suspected object was cleared.
 
 #### Error 1032, recovery plan, and decision
 
-No new evidence explains OS error 1032. The saved failure associates it with
-the logical-TSI1 restore ioctl `0x53`, but does not establish the first failing
+No new evidence in the 05:49 JST collection explained OS error 1032. The
+saved failure associates it with the logical-TSI1 restore ioctl `0x53`, but
+does not establish the first failing
 operation in setup. The code and available ABI notes still do not define the
-meaning of 1032. The current kernel log contained no new matching error.
+meaning of 1032. The 05:49 JST kernel log contained no new matching error.
 
 No recovery was attempted. Before another capture, use a separately approved
 maintenance window: establish that recordings, viewing, reservations, and
@@ -322,7 +323,84 @@ capture testing and have the device owner decide the recovery path. Any
 restoration write, service stop, or reset requires its own authorization and
 rollback plan.
 
-**Decision: NO-GO.** The integrated server currently owns the shared frontend
-lock, the frontend assignment differs from the saved native-path observation,
-and a comparable graph baseline is unavailable. No new BS2K attempt is
-authorized by this audit.
+**05:49 JST decision: NO-GO.** At that observation the integrated server
+owned the shared frontend lock, the frontend assignment differed from the
+saved native-path observation, and a comparable graph baseline was
+unavailable. No new BS2K attempt was authorized by that audit.
+
+### Read-only recheck after receiver became reachable (2026-11-02 08:55 JST)
+
+After the earlier Telnet connection failed with `No route to host`, the owner
+reported the receiver had been in standby (red LED) and asked for another
+check. CT141 SSH succeeded and the existing guarded Telnet helper connected to
+the receiver. The helper source was reviewed; every receiver command below
+was submitted through its guarded `run()` path. No receiver-side write,
+retune, graph creation/destruction, process control, upload, or reset occurred.
+Private raw captures are retained outside GitHub with restrictive file modes.
+
+#### Management and owner state
+
+- At 08:55 JST, EPGStation reported zero active recordings and three
+  reservations, all expired. The receiver API was reachable; version was
+  0.1.0, tuner-device/TS-filter/decoder stream counts were all zero, and its
+  sole tuner reported available, not faulted, not using, and no users.
+- OEM `tuner`, `card`, `abs`, and `adsb` processes were present. Their four
+  MD5 fingerprints exactly matched the fixed identity guard in this branch.
+  The integrated binary's SHA-256 matched the installed CT watcher manifest.
+- The integrated mkra process held the shared `flock` and had two open
+  `xcodedrv` descriptors. Thus the API's idle tuner state still does not mean
+  exclusive frontend ownership. The PR #2 trial binary was absent from the
+  receiver's volatile `/tmp/mt` listing; it was not executed.
+- CT's watcher timer was active/waiting. Its service was inactive after
+  successful `HEALTHY; no upload/start` checks. The BS2K EPG scanner remained
+  failed, BS4K scanner inactive, and proxy/EPGStation active.
+- The receiver reported about 2,600 seconds uptime, versus about 240,000
+  seconds in the earlier 05:49 JST capture. This indicates an uptime/boot
+  discontinuity since that capture; its cause is unknown. The receiver's own
+  wall clock read 2017 and was not used as a timestamp. The read-only probe
+  found no A/V pipeline threads and warned that the unit appeared to be in
+  standby, consistent with the owner's red-LED observation.
+
+#### TSI, frontend, and graph recheck
+
+The source-reviewed `tsi-mmr`, `graph --sniff`, and fixed-address process
+memory peek were run only after the OEM fingerprints and integrated-binary
+hash matched. The TSI words were:
+
+| Register/status | 08:55 JST | Saved 2026-10-16 post-capture baseline |
+| --- | ---: | ---: |
+| MMR `0x6000` | `0x01000000` | `0x01000000` |
+| MMR `0x6004` | `0x00000001` | `0x00000001` |
+| MMR `0x6008` | `0x01000100` | `0x01000100` |
+| MMR `0x600c` | `0x00000200` | `0x00000200` |
+| MMR `0x61f0` crossbar | `0x00000010` | `0x00000010` |
+| TSI0 | locked, CRC `0x31` | locked, CRC `0x43` |
+| TSI1 | unlocked, CRC `0x57` | unlocked, CRC `0xee` |
+
+The stable TSI/crossbar words match the saved baseline; CRC values are live
+counters. The tuner-memory peek returned `0x200` for `aDevOfPath[1]`, matching
+the saved native-path value. This differs from the 05:49 JST observation of
+`2`; the earlier legacy assignment is not present in this recheck. No causal
+claim is made about why that value changed.
+
+The graph reported 11 devices, 11 buffers, 2 pipelines, and 20 ports; 6 of
+the 11 listed buffer handles yielded valid readable objects. The earlier
+05:49 JST graph was 11/12/2/15. The documented historical standby summary
+reported 11 devices and 9 buffers, while the active-4K graph was 22/32/2/73.
+These are not an exact same-state graph/ownership baseline. Two pipelines do
+not prove a leftover, and the current graph's ownership remains **UNKNOWN**.
+No graph object was cleared.
+
+#### Updated decision
+
+No new evidence explains OS error 1032. It remains associated with logical
+TSI1 restore ioctl `0x53`; its meaning and the first failed setup operation
+remain **UNKNOWN**. No recovery was attempted. The stable TSI words and
+frontend assignment now match the saved native-path baseline, so these
+observations do not support a TSI restoration write. Unattributed graph
+objects must still be preserved.
+
+**Decision remains NO-GO for another BS2K capture.** The integrated server
+still owns the frontend lock, the unit appeared to be in standby, and a
+comparable graph ownership baseline is unavailable. No new capture is
+authorized by this recheck.
