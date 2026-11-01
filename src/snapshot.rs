@@ -7,12 +7,12 @@
 //!
 //! Register and memory watchlists were generated during the frozen BS/CS 2K
 //! investigation (docs/LIMITATIONS.md),
-//! re-derived independently from `tuner` b4f6b070…:
-//!   * `0x3c748` Recommend_DIFF one-shot flags — `set_system` reads at
+//! re-derived independently from `tuner` SHA256 480c7afae91a8910…:
+//!   * `0x3c7e8` Recommend_DIFF one-shot flags — `set_system` reads at
 //!     `0x22704/0x22706` and writes at `0x22720/0x22722` (PC-relative).
-//!   * `0x3c758` ISDB-S3 PSEQ one-shot flags — read `0x22798/0x2279a`,
+//!   * `0x3c7f8` ISDB-S3 PSEQ one-shot flags — read `0x22798/0x2279a`,
 //!     write `0x227bc/0x227be`.
-//!   * `0x3c940` S3 context array, 3 entries of stride `0xc78` — GOT `0x37370`.
+//!   * `0x3c9e0` S3 context array, 3 entries of stride `0xc78` — GOT `0x37370`.
 //! The ELF is ET_EXEC linked at base `0x8000`, so these are absolute virtual
 //! addresses; a caller must still confirm the mapping in `/proc/<pid>/maps`.
 
@@ -63,9 +63,9 @@ pub const WATCHLIST: [(u8, u8, &str); 42] = [
 ];
 
 /// `tuner` `.bss` addresses. Absolute: the ELF is ET_EXEC, link base `0x8000`.
-pub const RECOMMEND_FLAGS: u32 = 0x0003_c748;
-pub const PSEQ_FLAGS: u32 = 0x0003_c758;
-pub const CONTEXT_BASE: u32 = 0x0003_c940;
+pub const RECOMMEND_FLAGS: u32 = 0x0003_c7e8;
+pub const PSEQ_FLAGS: u32 = 0x0003_c7f8;
+pub const CONTEXT_BASE: u32 = 0x0003_c9e0;
 pub const CONTEXT_STRIDE: u32 = 0x0c78;
 
 /// Byte offsets inside one S3 context entry that the plan asks to record.
@@ -155,12 +155,12 @@ mod tests {
 
     #[test]
     fn runtime_addresses_match_the_independently_derived_values() {
-        assert_eq!(RECOMMEND_FLAGS, 0x3c748);
-        assert_eq!(PSEQ_FLAGS, 0x3c758);
-        assert_eq!(CONTEXT_BASE, 0x3c940);
+        assert_eq!(RECOMMEND_FLAGS, 0x3c7e8);
+        assert_eq!(PSEQ_FLAGS, 0x3c7f8);
+        assert_eq!(CONTEXT_BASE, 0x3c9e0);
         assert_eq!(CONTEXT_STRIDE, 0x0c78);
         // dev 0x200/0x400/0x800 map to context index 0/1/2.
-        assert_eq!(CONTEXT_BASE + 2 * CONTEXT_STRIDE, 0x3e230);
+        assert_eq!(CONTEXT_BASE + 2 * CONTEXT_STRIDE, 0x3e2d0);
     }
 
     #[test]
@@ -180,6 +180,23 @@ mod tests {
 pub mod procmem {
     use std::fs;
     use std::io;
+
+    /// Fixed process addresses are valid only for the independently analysed ELF.
+    pub fn verify_layout(pid: u32) -> io::Result<()> {
+        let elf = fs::read(format!("/proc/{pid}/exe"))?;
+        let build_id = [0xc1,0xeb,0x0b,0x76,0xd3,0x20,0x09,0x9c,0x84,0x3b,
+                        0x7a,0x98,0x7a,0x89,0xdb,0xb7,0x1e,0x08,0xd2,0x82];
+        let word = |off: usize| elf.get(off..off+4);
+        if !elf.starts_with(b"\x7fELF")
+            || !elf.get(..4096).unwrap_or(&elf).windows(20).any(|b| b == build_id)
+            || word(0x27370) != Some(super::CONTEXT_BASE.to_le_bytes().as_slice())
+            || word(0x1a940) != Some(0x1a0deu32.to_le_bytes().as_slice())
+            || word(0x1a950) != Some(0x1a05au32.to_le_bytes().as_slice()) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData,
+                "unrecognised tuner ELF; refusing fixed-address process access"));
+        }
+        Ok(())
+    }
 
     /// Find the pid whose `/proc/<pid>/comm` is exactly `name`.
     pub fn find_pid(name: &str) -> io::Result<u32> {
@@ -284,6 +301,8 @@ pub mod procmem {
         ))
     }
 
+    pub fn verify_layout(_pid: u32) -> io::Result<()> { unsupported() }
+
     pub fn find_pid(_name: &str) -> io::Result<u32> {
         unsupported()
     }
@@ -323,6 +342,12 @@ mod maps_tests {
     /// A real `tuner` maps line shape: the ET_EXEC data/bss segment must come
     /// back writable, and a read-only text mapping must not.
     #[test]
+    #[cfg(target_os = "linux")]
+    fn fixed_address_access_rejects_unrecognised_executable() {
+        assert!(super::procmem::verify_layout(std::process::id()).is_err());
+    }
+
+    #[test]
     fn writable_lookup_matches_maps_permissions() {
         let maps = "\
 00008000-00037000 r-xp 00000000 b3:03 1234 /usr/bin/tuner
@@ -357,6 +382,7 @@ pub mod oneshot {
     use std::io;
 
     pub fn clear(pid: u32, addr: u32) -> io::Result<(u32, u32)> {
+        procmem::verify_layout(pid)?;
         let maps = procmem::maps(pid)?;
         if !procmem::is_writable(&maps, addr) {
             return Err(io::Error::new(
