@@ -96,6 +96,10 @@ impl TsSource for XcReaderSource {
             Err(e) => return Err(e),
         };
         if chunk.is_empty() {
+            // A successful zero-byte read can still own a descriptor.
+            // OEM ABS:28feea..28ff00 commits it even without payload.
+            // Skipping that release wedges later commits and reader teardown.
+            if chunk.desc != 0 { self.drv.commit_read(self.reader, &chunk)?; }
             return Ok(0);
         }
         let before = out.len();
