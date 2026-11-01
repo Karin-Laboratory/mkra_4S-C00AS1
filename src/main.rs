@@ -553,6 +553,8 @@ fn cmd_dmd_iface(target: gr_i2c::TsoutInterface) -> i32 {
         gr_i2c::TsoutInterface::IsdbsDefault => "regset_ISDBS defaults (rollback)",
         gr_i2c::TsoutInterface::Mode16Serial => "0x16 only -> 0x21",
         gr_i2c::TsoutInterface::Mode16Isdbs => "0x16 only -> 0x00 (rollback)",
+        gr_i2c::TsoutInterface::TsSerial20 => "experimental TS serial: 0x16 -> 0x20",
+        gr_i2c::TsoutInterface::TsSerial20Restore => "experimental TS serial rollback: 0x16 -> 0x00",
     };
     match gr_i2c::set_tsout_interface(target) {
         Ok(result) => {
