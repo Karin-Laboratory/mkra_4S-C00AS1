@@ -39,18 +39,35 @@ PSI/SI sections were all zero. PAT identified TSID `0x4010` and services
 151/152/153. These are **historic device observations**, not new CI/device
 validation performed as part of this PR.
 
-## What this patch does and does not do
+## What this PR adds
 
-This PR introduces only the isolated legacy ISDB-S tuning, FEM assignment,
-message-format and cleanup primitives in `src/tuner.rs`; it deliberately does
-**not** wire up the end-to-end capture path. The remaining graph/ring reader,
-TS output mode, CAS, MULTI2 descrambling, Mirakurun endpoints, EPGStation,
-recording scripts, and integration are **out of scope**.
+This is a deliberately small **raw MPEG-TS capture path**, rather than the
+complete BS2K/BS4K server:
 
-The tuner-specific API can be reviewed independently; a later PR can add
-a narrowly scoped **unencrypted/raw MPEG-TS capture** path using these
-primitives. The full working but larger reference implementation is in:
-https://github.com/Karin-Laboratory/mkra_4S-C00AS1
+- `src/tuner.rs`: legacy ISDB-S tuning and FEM/FED command primitives.
+- `src/xcdrv.rs`: measured logical TSI1 -> physical TSI0 crossbar mapping,
+  saved-state restoration and necessary DEMUX/TS buffer support.
+- `src/tssrc.rs`: ring-reader handling, including zero-length descriptor commits.
+- `src/bs2k_raw.rs`: owned graph (pipeline, AV sync, DEMUX, TS ring, reader)
+  with cleanup and fail-closed preflight, **without CAS or MULTI2**.
+- `src/main.rs`: bounded, opt-in `bs2k-raw` command writing TS bytes to disk.
+
+The patch **does not** implement access-controlled content descrambling,
+Mirakurun/HTTP services, EPGStation, TV scheduling, or 2K/4K arbitration. The
+resulting raw transport stream may retain scrambled payloads. This is **not**
+equivalent to the integrated fork's historic live decoded-video result.
+
+Example for an isolated test unit only, after ensuring native viewing and
+recording have stopped:
+
+```sh
+mkra bs2k-raw --out /tmp/bs2k.ts --seconds 5 --freq 11727480 --tsid 4010
+```
+
+The output path is a RAM file on the target device. No device commands were
+run as part of preparing this PR. The 15-second successful reception reported
+above comes from the full experimental fork and **is not evidence of successful
+operation of this extracted branch**.
 
 ### Limitations / operational safety
 
