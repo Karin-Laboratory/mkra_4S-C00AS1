@@ -17,6 +17,18 @@ use std::{
 fn err(s: impl Into<String>) -> io::Error {
     io::Error::other(s.into())
 }
+fn stage<T>(name: &str, result: io::Result<T>) -> io::Result<T> {
+    result.map_err(|e| stage_error(name, e))
+}
+fn stage_error(name: &str, e: io::Error) -> io::Error {
+    io::Error::new(
+        e.kind(),
+        format!("{name}: {e} (raw_os_error={:?})", e.raw_os_error()),
+    )
+}
+fn should_restore_tsi(touched: bool, graph_clear: bool, cleanup_ok: bool) -> bool {
+    touched && graph_clear && cleanup_ok
+}
 fn identity() -> io::Result<()> {
     for (path, want) in [
         ("/usr/bin/tuner", "0416f546e87bd2b0c7a2e764ea0ee292"),
@@ -60,6 +72,7 @@ pub struct Source {
     connection: u32,
     filter: bool,
     running: bool,
+    tsi_may_be_modified: bool,
     reader: Option<XcReaderSource>,
     scratch: Vec<u8>,
     last_data: Instant,
@@ -79,8 +92,13 @@ impl Source {
                 "previous graph cleanup failed; inspect before restarting",
             ));
         }
-        identity()?;
-        let mapping = drv.snapshot_tsi_mapping()?;
+        stage("OEM identity", identity())?;
+        if stage("frontend assignment preflight", legacy_frontend())? {
+            return Err(err(
+                "frontend is already assigned to legacy ISDB-S; refusing takeover",
+            ));
+        }
+        let mapping = stage("TSI mapping snapshot", drv.snapshot_tsi_mapping())?;
         let mut source = Self {
             drv,
             mapping: Some(mapping),
@@ -91,6 +109,7 @@ impl Source {
             connection: 0,
             filter: false,
             running: false,
+            tsi_may_be_modified: false,
             reader: None,
             scratch: Vec::new(),
             last_data: Instant::now(),
@@ -101,12 +120,22 @@ impl Source {
             .ok_or_else(|| err("invalid ISDB-S path"))?;
         req.validate().map_err(err)?;
         legacy.store(true, Ordering::SeqCst); // includes partial frontend changes
-        tuner::Tuner::open(tuner::MSGH_LIST)?.set_device(&tuner::FemDeviceRequest::assign(1, 2))?;
+        stage(
+            "open FEM message queue",
+            tuner::Tuner::open(tuner::MSGH_LIST),
+        )?
+        .set_device(&tuner::FemDeviceRequest::assign(1, 2))
+        .map_err(|e| stage_error("assign FEM path1 to ISDB-S", e))?;
         std::thread::sleep(Duration::from_millis(300));
-        tuner::Tuner::open_qid(req.fed_qid, tuner::MSGH_LIST)?.tune_fed(&req)?;
+        stage(
+            "open FED message queue",
+            tuner::Tuner::open_qid(req.fed_qid, tuner::MSGH_LIST),
+        )?
+        .tune_fed(&req)
+        .map_err(|e| stage_error("post ISDB-S FED tune request", e))?;
         let until = Instant::now() + Duration::from_secs(12);
         loop {
-            let r = gr_i2c::read_output_regs()?;
+            let r = stage("read SC1501A output status", gr_i2c::read_output_regs())?;
             if r.lock & 0x20 != 0
                 && r.bank2_selection[..2] == tsid.to_be_bytes()
                 && r.bank0.iter().any(|&(r, v)| r == 0xcc && v & 0x80 != 0)
@@ -121,29 +150,66 @@ impl Source {
             }
             std::thread::sleep(Duration::from_millis(150));
         }
-        source.pipeline = source.drv.create_pipeline()?;
-        source.av = source.drv.create_av_sync()?;
-        source.drv.set_pipeline(source.av, source.pipeline)?;
-        source.drv.configure_product_mpeg_ts_tsi(0)?;
-        source.drv.map_tsi_one_to_zero()?;
-        source.drv.set_av_sync_live_mode(source.av)?;
-        source.device = source.drv.create_mpeg_ts_demux()?;
-        source.drv.set_pipeline(source.device, source.pipeline)?;
-        source.drv.config_ts_recorder_tsi(source.device, 1)?;
-        source.drv.run_product_demux(source.device)?;
+        source.pipeline = stage("create owned pipeline", source.drv.create_pipeline())?;
+        source.av = stage("create owned AV_SYNC", source.drv.create_av_sync())?;
+        stage(
+            "attach AV_SYNC to pipeline",
+            source.drv.set_pipeline(source.av, source.pipeline),
+        )?;
+        // Both calls can mutate hardware and then report an error; mark the
+        // snapshot as potentially dirty before the first one.
+        source.tsi_may_be_modified = true;
+        stage(
+            "configure physical TSI0",
+            source.drv.configure_product_mpeg_ts_tsi(0),
+        )?;
+        stage(
+            "map logical TSI1 to physical TSI0",
+            source.drv.map_tsi_one_to_zero(),
+        )?;
+        stage(
+            "set AV_SYNC live mode",
+            source.drv.set_av_sync_live_mode(source.av),
+        )?;
+        source.device = stage(
+            "create owned MPEG-TS DEMUX",
+            source.drv.create_mpeg_ts_demux(),
+        )?;
+        stage(
+            "attach DEMUX to pipeline",
+            source.drv.set_pipeline(source.device, source.pipeline),
+        )?;
+        stage(
+            "configure DEMUX recorder input TSI1",
+            source.drv.config_ts_recorder_tsi(source.device, 1),
+        )?;
+        // A failed RUN may still have partially started the owned device.
         source.running = true;
-        source.buffer = source.drv.create_demux_ts_buffer()?;
-        source.connection = source.drv.connect_output(source.device, source.buffer)?;
-        source.reader = Some(XcReaderSource::attach(
-            Arc::clone(&source.drv),
-            source.buffer,
-            200,
+        stage(
+            "run owned DEMUX",
+            source.drv.run_product_demux(source.device),
+        )?;
+        source.buffer = stage("create owned TS ring", source.drv.create_demux_ts_buffer())?;
+        source.connection = stage(
+            "connect owned DEMUX output",
+            source.drv.connect_output(source.device, source.buffer),
+        )?;
+        source.reader = Some(stage(
+            "create owned ring reader",
+            XcReaderSource::attach(Arc::clone(&source.drv), source.buffer, 200),
         )?);
-        source
-            .drv
-            .add_demux_pid(source.device, u32::MAX, source.connection)?;
+        // ADD_PID may install the filter before reporting an error.
         source.filter = true;
-        source.drv.set_buffer_ready(source.buffer)?;
+        stage(
+            "add full-TS PID filter",
+            source
+                .drv
+                .add_demux_pid(source.device, u32::MAX, source.connection),
+        )?;
+        stage(
+            "set TS ring ready",
+            source.drv.set_buffer_ready(source.buffer),
+        )?;
         source.last_data = Instant::now();
         eprintln!("mkra: opened {}", source.label);
         Ok(source)
@@ -177,34 +243,56 @@ impl TsSource for Source {
 impl Drop for Source {
     fn drop(&mut self) {
         let mut good = true;
-        let mut check = |label: &str, r: io::Result<()>| {
-            if let Err(e) = r {
-                good = false;
-                eprintln!("mkra: BS2K cleanup {label}: {e}");
-            }
-        };
+        macro_rules! check {
+            ($label:expr, $result:expr $(,)?) => {
+                if let Err(e) = $result {
+                    good = false;
+                    eprintln!("mkra: BS2K cleanup {}: {e}", $label);
+                }
+            };
+        }
         if self.filter {
-            check(
+            check!(
                 "remove PID",
                 self.drv.remove_demux_pid(self.device, u32::MAX),
             );
         }
-        drop(self.reader.take());
+        if let Some(mut reader) = self.reader.take() {
+            check!("release owned reader", reader.close());
+        }
         if self.connection != 0 {
             if let Err(first) = self
                 .drv
                 .disconnect_product_demux(self.device, self.connection)
             {
                 eprintln!("mkra: BS2K disconnect needs stop/retry: {first}");
+                let mut retry_allowed = true;
                 if self.running {
-                    check("stop retry", self.drv.stop_device(self.device));
-                    self.running = false;
+                    match self.drv.stop_device(self.device) {
+                        Ok(()) => self.running = false,
+                        Err(e) => {
+                            good = false;
+                            retry_allowed = false;
+                            eprintln!("mkra: BS2K cleanup stop retry: {e}");
+                        }
+                    }
                 }
-                check(
-                    "disconnect retry",
-                    self.drv
-                        .disconnect_product_demux(self.device, self.connection),
-                );
+                if retry_allowed {
+                    check!(
+                        "disconnect retry",
+                        self.drv
+                            .disconnect_product_demux(self.device, self.connection),
+                    );
+                }
+            }
+        }
+        if self.running {
+            match self.drv.stop_device(self.device) {
+                Ok(()) => self.running = false,
+                Err(e) => {
+                    good = false;
+                    eprintln!("mkra: BS2K cleanup stop: {e}");
+                }
             }
         }
         let clear = self.buffer == 0
@@ -213,40 +301,70 @@ impl Drop for Source {
                 .sbuf_status_raw(self.buffer)
                 .is_ok_and(|s| s[8] == 0 && s[9] == 0);
         if self.buffer != 0 {
-            if clear {
-                check("reset ring", self.drv.force_reset_buffer(self.buffer));
-                check("destroy ring", self.drv.destroy_buffer(self.buffer));
+            if clear && !self.running {
+                check!("reset ring", self.drv.force_reset_buffer(self.buffer));
+                check!("destroy ring", self.drv.destroy_buffer(self.buffer));
             } else {
-                check(
+                check!(
                     "ring ownership",
-                    Err(err("retaining graph with live writer/readers")),
+                    Err::<(), _>(err("retaining graph with live writer/readers")),
                 );
             }
         }
-        if self.running {
-            check("stop", self.drv.stop_device(self.device));
+        let can_destroy_graph = clear && !self.running;
+        if self.device != 0 && can_destroy_graph {
+            check!("destroy DEMUX", self.drv.destroy_device(self.device));
         }
-        if self.device != 0 && clear {
-            check("destroy DEMUX", self.drv.destroy_device(self.device));
+        if self.pipeline != 0 && can_destroy_graph {
+            check!("stop pipeline", self.drv.stop_pipeline(self.pipeline));
         }
-        if self.pipeline != 0 && clear {
-            check("stop pipeline", self.drv.stop_pipeline(self.pipeline));
+        if self.av != 0 && can_destroy_graph {
+            check!("destroy AV_SYNC", self.drv.destroy_device(self.av));
         }
-        if self.av != 0 && clear {
-            check("destroy AV_SYNC", self.drv.destroy_device(self.av));
+        if self.pipeline != 0 && can_destroy_graph {
+            check!("destroy pipeline", self.drv.destroy_pipeline(self.pipeline));
         }
-        if self.pipeline != 0 && clear {
-            check("destroy pipeline", self.drv.destroy_pipeline(self.pipeline));
-        }
-        if clear {
+        if should_restore_tsi(self.tsi_may_be_modified, can_destroy_graph, good) {
             if let Some(mapping) = self.mapping.take() {
-                check("restore TSI", self.drv.restore_tsi_mapping(&mapping));
+                check!("restore TSI", self.drv.restore_tsi_mapping(&mapping));
             }
+        } else if self.tsi_may_be_modified {
+            eprintln!(
+                "mkra: BS2K cleanup: retaining TSI mapping because graph cleanup is incomplete"
+            );
         }
         if !good {
             self.dirty.store(true, Ordering::SeqCst);
         }
         eprintln!("mkra: BS2K raw graph closed; cleanup_ok={good}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tsi_restore_is_skipped_before_any_tsi_mutation() {
+        assert!(!should_restore_tsi(false, true, true));
+    }
+
+    #[test]
+    fn partial_tsi_mutation_is_restored_only_after_clean_owned_graph_teardown() {
+        assert!(should_restore_tsi(true, true, true));
+        assert!(!should_restore_tsi(true, false, true));
+        assert!(!should_restore_tsi(true, true, false));
+    }
+
+    #[test]
+    fn failing_ioctl_diagnostic_identifies_stage_and_preserves_raw_code_text() {
+        let e = stage::<()>(
+            "ioctl 0x53 logical TSI1 restore",
+            Err(io::Error::from_raw_os_error(1032)),
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("ioctl 0x53 logical TSI1 restore"));
+        assert!(e.to_string().contains("raw_os_error=Some(1032)"));
     }
 }
 /// Restore native frontend initialization. Actual 4K service tune follows in factory.

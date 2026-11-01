@@ -81,6 +81,24 @@ impl XcReaderSource {
     pub fn map_stats(&self) -> (u64, u64) {
         (self.maps.hits, self.maps.misses)
     }
+
+    /// Explicitly release this reader so its owner can include teardown
+    /// failure in the enclosing graph's dirty-state decision.
+    pub fn close(&mut self) -> io::Result<()> {
+        if self.reader == 0 {
+            return Ok(());
+        }
+        let cancel = self.drv.cancel_get_read(self.reader);
+        let destroy = self.drv.destroy_reader(self.reader);
+        if destroy.is_ok() {
+            self.reader = 0;
+        }
+        match (cancel, destroy) {
+            (Err(e), _) => Err(e),
+            (Ok(()), Err(e)) => Err(e),
+            (Ok(()), Ok(())) => Ok(()),
+        }
+    }
 }
 
 impl TsSource for XcReaderSource {
@@ -152,19 +170,8 @@ impl XcReaderSource {
 
 impl Drop for XcReaderSource {
     fn drop(&mut self) {
-        // Cancel first: a reader parked in get_read cannot be destroyed, and a
-        // buffer with a live reader cannot be destroyed either.
-        if let Err(e) = self.drv.cancel_get_read(self.reader) {
-            eprintln!(
-                "mkra: warning: cancel_get_read({:#x}) failed: {e}",
-                self.reader
-            );
-        }
-        if let Err(e) = self.drv.destroy_reader(self.reader) {
-            eprintln!(
-                "mkra: warning: destroy_reader({:#x}) failed: {e}",
-                self.reader
-            );
+        if let Err(e) = self.close() {
+            eprintln!("mkra: warning: reader cleanup failed: {e}");
         }
     }
 }

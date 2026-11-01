@@ -22,6 +22,7 @@ mod bs2k_raw;
 mod channels;
 mod cpld;
 mod findbuf;
+mod frontend_lock;
 mod graph;
 mod gr;
 mod gr_i2c;
@@ -409,6 +410,15 @@ fn cmd_bs2k_raw_direct(args: &[String]) -> i32 {
     };
     if let Err(e) = request.validate() { eprintln!("mkra: {e}"); return 2; }
     eprintln!("mkra: raw TS only; changes frontend state, competes with native TV/4K; stop recording first");
+    // The integrated --bs2k server takes this same lock even while its API
+    // reports no active stream. Refuse before opening xcodedrv if it is held.
+    let _frontend_lock = match frontend_lock::FrontendLock::acquire() {
+        Ok(lock) => lock,
+        Err(e) => {
+            eprintln!("mkra: BS2K raw preflight: frontend lock: {e}");
+            return 1;
+        }
+    };
     let result = (|| -> io::Result<(u64,u64)> {
         let drv = Arc::new(XcDrv::open_path(&dev)?);
         let dirty = Arc::new(AtomicBool::new(false));

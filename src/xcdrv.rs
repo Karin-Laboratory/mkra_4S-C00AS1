@@ -122,6 +122,15 @@ pub struct TsiMappingSnapshot {
     requests: [[u32; 10]; 2],
 }
 
+impl TsiMappingSnapshot {
+    fn logical_tsi1_identity_restore_request(&self) -> [u32; 11] {
+        let mut req = [0u32; 11];
+        req[..10].copy_from_slice(&self.requests[1]);
+        req[10] = 1;
+        req
+    }
+}
+
 fn decode_physical_tsi(port: u32, registers: [u32; 3]) -> io::Result<[u32; 10]> {
     if port > 1 { return Err(io::Error::other("snapshot supports physical TSI0/1 only")); }
     let [control, electrical, drop] = registers;
@@ -1045,13 +1054,28 @@ impl XcDrv {
         if !matches!(current, 0 | 0x10) {
             return Err(io::Error::other("foreign TSI mapping change; refusing overwrite"));
         }
-        let mut req = [0u32;11];
-        req[..10].copy_from_slice(&saved.requests[1]); req[10]=1;
+        let mut req = saved.logical_tsi1_identity_restore_request();
         log_raw_words("restore logical TSI1 identity and physical TSI1", &req);
-        unsafe {self.call(0x53, &mut req)?};
+        unsafe { self.call(0x53, &mut req) }.map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!(
+                    "ioctl 0x53 restoring logical TSI1 failed for {req:08x?}: {e} (raw_os_error={:?})",
+                    e.raw_os_error()
+                ),
+            )
+        })?;
         let mut physical = saved.requests[0];
         log_raw_words("restore physical TSI0", &physical);
-        unsafe {self.call(TSI_CONFIG, &mut physical)?};
+        unsafe { self.call(TSI_CONFIG, &mut physical) }.map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!(
+                    "ioctl 0x50 restoring physical TSI0 failed for {physical:08x?}: {e} (raw_os_error={:?})",
+                    e.raw_os_error()
+                ),
+            )
+        })?;
         let actual = [self.mmr_read32(0x6000)?,self.mmr_read32(0x6008)?,self.mmr_read32(0x600c)?];
         if actual != saved.registers || self.mmr_read32(0x61f0)? != 0x10 {
             return Err(io::Error::other(format!("TSI rollback readback differs: {actual:08x?} expected {:08x?}", saved.registers)));
@@ -1686,6 +1710,21 @@ mod tests {
         // Historical both-port diagnostic snapshot, rather than an encoder
         // round trip: both enabled, both active-high/falling, no drop-null.
         assert_eq!(decode_physical_tsi(1,[0x03000000,0x03000300,0]).unwrap(),[1,0,0,1,0,0,1,0,1,0]);
+    }
+
+    #[test]
+    fn tsi_identity_restore_request_uses_snapshot_port1_and_restore_selector() {
+        let saved = TsiMappingSnapshot {
+            registers: [0x0300_0000, 0x0300_0300, 0],
+            requests: [
+                [0, 0, 0, 1, 0, 0, 1, 0, 1, 0],
+                [1, 0, 0, 1, 0, 0, 1, 0, 1, 0],
+            ],
+        };
+        assert_eq!(
+            saved.logical_tsi1_identity_restore_request(),
+            [1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1]
+        );
     }
 
     #[test]
