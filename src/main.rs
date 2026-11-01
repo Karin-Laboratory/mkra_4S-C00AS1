@@ -18,6 +18,7 @@
 //! changing behaviour on the device.
 
 mod api;
+mod bs2k_raw;
 mod channels;
 mod cpld;
 mod findbuf;
@@ -310,6 +311,10 @@ fn main() {
         return;
     }
 
+    if args.first().map(String::as_str) == Some("bs2k-raw") {
+        std::process::exit(cmd_bs2k_raw_direct(&args[1..]));
+    }
+
     let opts = match Options::parse(&args) {
         Ok(o) => o,
         Err(e) => {
@@ -355,6 +360,91 @@ fn main() {
         }
     };
     std::process::exit(code);
+}
+
+
+/// Explicit device-only experiment: capture *raw* (still scrambled when required)
+/// ordinary-BS MPEG-TS. Never claims to descramble or restore native HDMI.
+/// This intentionally bypasses the large integrated 2K HTTP/EPG/CAS feature set.
+fn cmd_bs2k_raw_direct(args: &[String]) -> i32 {
+    let mut out = None;
+    let mut seconds: u64 = 5;
+    let mut dev = "/dev/vixs/xcodedrv".to_string();
+    let mut freq: u32 = 11_727_480;
+    let mut tsid: u16 = 0x4010;
+    let mut opt = args.iter();
+    while let Some(arg) = opt.next() {
+        let val = match opt.next() {
+            Some(v) => v,
+            None => { eprintln!("mkra: missing value after {arg}"); return 2; }
+        };
+        match arg.as_str() {
+            "--out" => out = Some(val.clone()),
+            "--dev-node" => dev = val.clone(),
+            "--seconds" => match val.parse::<u64>() {
+                Ok(v) if (1..=30).contains(&v) => seconds = v,
+                _ => { eprintln!("mkra: seconds must be 1..30"); return 2; }
+            },
+            "--freq" => match val.parse::<u32>() {
+                Ok(v) => freq = v,
+                _ => { eprintln!("mkra: invalid RF kHz"); return 2; }
+            },
+            "--tsid" => match u16::from_str_radix(val.trim_start_matches("0x"),16) {
+                Ok(v) => tsid = v,
+                _ => { eprintln!("mkra: invalid hex TSID"); return 2; }
+            },
+            _ => { eprintln!("mkra: unknown bs2k-raw option {arg}"); return 2; }
+        }
+    }
+    let Some(out) = out else {
+        eprintln!("usage: mkra bs2k-raw --out capture.ts [--seconds 1..30] [--freq RF_KHZ] [--tsid HEX] [--dev-node PATH]");
+        return 2;
+    };
+    if !out.ends_with(".ts") {
+        eprintln!("mkra: output must be a .ts file"); return 2;
+    }
+    let request = match tuner::FedTuneRequest::isdb_s(1,tsid,freq) {
+        Some(req) => req,
+        None => { eprintln!("mkra: invalid frontend"); return 2; }
+    };
+    if let Err(e) = request.validate() { eprintln!("mkra: {e}"); return 2; }
+    eprintln!("mkra: raw TS only; changes frontend state, competes with native TV/4K; stop recording first");
+    let result = (|| -> io::Result<(u64,u64)> {
+        let drv = Arc::new(XcDrv::open_path(&dev)?);
+        let dirty = Arc::new(AtomicBool::new(false));
+        let legacy = AtomicBool::new(false);
+        let mut source = bs2k_raw::Source::open(drv, freq, tsid, &legacy, Arc::clone(&dirty))?;
+        let mut file = std::fs::File::create(&out)?;
+        let mut total = 0u64;
+        let mut packets = 0u64;
+        let until = Instant::now() + Duration::from_secs(seconds);
+        let mut buf = Vec::with_capacity(128*1024);
+        while Instant::now() < until {
+            buf.clear();
+            source.read_into(&mut buf)?;
+            if !buf.is_empty() {
+                if buf.len()%188 != 0 || buf.chunks_exact(188).any(|p|p[0]!=0x47) {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData,"TS sync or packet length invalid"));
+                }
+                file.write_all(&buf)?;
+                total += buf.len() as u64;
+                packets += (buf.len()/188) as u64;
+            }
+        }
+        file.flush()?;
+        drop(source);
+        if dirty.load(Ordering::SeqCst) {
+            return Err(io::Error::other("DEMUX cleanup failed: stop and inspect; do not retune"));
+        }
+        Ok((total,packets))
+    })();
+    match result {
+        Ok((bytes,packets)) => {
+            eprintln!("mkra: raw TS captured: {bytes} bytes / {packets} packets; frontend state may remain BS2K");
+            if bytes==0 { 1 } else { 0 }
+        }
+        Err(e) => { eprintln!("mkra: BS2K capture failed: {e}; device state requires inspection"); 1 }
+    }
 }
 
 /// Read the SC1501A's documented ISDB-S lock byte while holding the vendor
