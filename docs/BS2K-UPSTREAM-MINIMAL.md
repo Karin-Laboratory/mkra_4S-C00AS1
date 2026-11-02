@@ -461,3 +461,11 @@ SIGTERM shutdown, source cleanup, and frontend-lock release are observed once;
 timer states and API/proxy/EPG health can be restored and verified. Any
 unknown owner, baseline mismatch, failed cleanup, or failed restore means
 STOP/NO-GO. This preparation is not evidence that those gates now pass.
+
+### R4 maintenance acceptance preflight (2026-11-02 JST): BLOCKED / NO-GO
+
+A read-only R4 review reached the receiver through the previously approved guarded route. The four OEM fingerprints matched. However, the integrated process still held the frontend lock and driver descriptors; the API showed one tuner user; and diagnostics reported standby. Its binary SHA did not match the R3 graceful-shutdown build. The deployed watcher runtime also lacked the `bundle.json` required by the R3 helper. Timer state was active, so no maintenance entry was attempted. No process, timer, frontend, TSI, graph, or power state was changed, and no BS2K capture was run.
+
+TSI words matched the historical known values, but the read-only graph inventory (11 devices, 12 buffers, 2 pipelines, 22 ports) has no comparable same-boot ownership baseline. The two pipelines therefore remain UNKNOWN, neither proven residual nor proven normal. Full evidence and R5 prerequisites are recorded in [the PR #3 R4 report](https://github.com/Karin-Laboratory/mkra_4S-C00AS1/blob/feat/bs2k-maintenance-graceful-shutdown-r3/docs/BS2K-MAINTENANCE-SWITCH.ja.md).
+
+**BS2K retest remains NO-GO.** Do not send a signal or alter timers until a graceful-capable deployed binary and matching watcher bundle are established, the tuner is idle and the receiver is active, a maintenance window is clear, and same-boot frontend/TSI/graph ownership can be compared. Passing the historical TSI-value comparison alone is insufficient.
