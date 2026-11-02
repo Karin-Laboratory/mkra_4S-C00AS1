@@ -59,6 +59,31 @@ use stream::{Broker, BrokerConfig};
 use tssrc::{FileSource, NullSource, PassiveRingSource, TsSource};
 use xcdrv::XcDrv;
 
+static SERVER_SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn request_server_shutdown(_signal: i32) {
+    // AtomicBool is lock-free on the Linux targets used here; the handler does
+    // no allocation, logging, or other non-signal-safe work.
+    SERVER_SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+fn install_server_shutdown_signals() -> io::Result<()> {
+    use std::os::raw::c_int;
+    unsafe extern "C" {
+        fn signal(signal: c_int, handler: *const ()) -> *const ();
+    }
+
+    SERVER_SHUTDOWN_REQUESTED.store(false, Ordering::Relaxed);
+    let handler = request_server_shutdown as *const ();
+    for signal_number in [2, 15] { // SIGINT, SIGTERM
+        let previous = unsafe { signal(signal_number, handler) };
+        if previous as isize == -1 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
 fn is_xce_no_support(error: &io::Error) -> bool {
     error.raw_os_error() == Some(1003)
 }
@@ -1643,20 +1668,33 @@ fn cmd_serve(opts: &Options) -> i32 {
         }
     };
 
+    if let Err(e) = install_server_shutdown_signals() {
+        eprintln!("mkra: cannot install graceful shutdown handlers: {e}");
+        return 1;
+    }
     eprintln!(
         "mkra {} listening on {addr} — {} channels, backend: {backend}",
         api::MKRA_VERSION,
         state.table.channels.len()
     );
+    eprintln!("mkra: graceful shutdown enabled (SIGINT/SIGTERM)");
 
     let handler_state = Arc::clone(&state);
     let result = http::serve(
         listener,
         opts.max_clients + 8, // stream clients plus room for polling requests
         Arc::new(move |req, sock| api::handle(&handler_state, req, sock)),
+        &SERVER_SHUTDOWN_REQUESTED,
+        || broker.shutdown(),
     );
 
-    broker.shutdown();
+    // Drop application owners before releasing the cross-process frontend
+    // lock. The maintenance operator uses that lock as one of the proofs that
+    // this process no longer owns the driver.
+    drop(state);
+    drop(broker);
+    drop(_frontend_lock);
+    eprintln!("mkra: active source and HTTP handlers drained; backend owner and frontend lock released");
     if let Err(e) = result {
         eprintln!("mkra: server stopped: {e}");
         return 1;

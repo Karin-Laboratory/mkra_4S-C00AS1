@@ -684,6 +684,10 @@ fn stream(state: &AppState, req: &Request, out: &mut TcpStream, channel_key: &st
             let _ = respond_error(out, 503, "too many stream clients", false);
             return;
         }
+        Err(SubscribeError::ShuttingDown) => {
+            let _ = respond_error(out, 503, "server is shutting down", false);
+            return;
+        }
         Err(SubscribeError::Source(e)) => {
             eprintln!("mkra: cannot open TS source for {channel_key}: {e}");
             let _ = respond_error(out, 503, "no TS source available", false);
