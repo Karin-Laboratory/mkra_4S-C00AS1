@@ -240,6 +240,13 @@ impl TsSource for Source {
         self.label.clone()
     }
 }
+/// Only release owned graph objects after the ring is idle, the writer has
+/// stopped, the connection is detached and previous cleanup calls succeeded.
+/// In particular, an idle ring alone does not prove its graph edge is gone.
+fn can_release_graph(ring_clear: bool, running: bool, disconnected: bool, cleanup_ok: bool) -> bool {
+    ring_clear && !running && disconnected && cleanup_ok
+}
+
 impl Drop for Source {
     fn drop(&mut self) {
         let mut good = true;
@@ -260,29 +267,41 @@ impl Drop for Source {
         if let Some(mut reader) = self.reader.take() {
             check!("release owned reader", reader.close());
         }
+
+        // A failed DISCONNECT can leave an edge attached even if the ring
+        // status reports zero readers/writers. Do not destroy that graph.
+        let mut disconnected = self.connection == 0;
         if self.connection != 0 {
-            if let Err(first) = self
+            match self
                 .drv
                 .disconnect_product_demux(self.device, self.connection)
             {
-                eprintln!("mkra: BS2K disconnect needs stop/retry: {first}");
-                let mut retry_allowed = true;
-                if self.running {
-                    match self.drv.stop_device(self.device) {
-                        Ok(()) => self.running = false,
-                        Err(e) => {
-                            good = false;
-                            retry_allowed = false;
-                            eprintln!("mkra: BS2K cleanup stop retry: {e}");
+                Ok(()) => disconnected = true,
+                Err(first) => {
+                    eprintln!("mkra: BS2K disconnect needs stop/retry: {first}");
+                    if self.running {
+                        match self.drv.stop_device(self.device) {
+                            Ok(()) => self.running = false,
+                            Err(e) => {
+                                good = false;
+                                eprintln!("mkra: BS2K cleanup stop retry: {e}");
+                            }
                         }
                     }
-                }
-                if retry_allowed {
-                    check!(
-                        "disconnect retry",
-                        self.drv
-                            .disconnect_product_demux(self.device, self.connection),
-                    );
+                    if !self.running {
+                        match self
+                            .drv
+                            .disconnect_product_demux(self.device, self.connection)
+                        {
+                            Ok(()) => disconnected = true,
+                            Err(e) => {
+                                good = false;
+                                eprintln!("mkra: BS2K cleanup disconnect retry: {e}");
+                            }
+                        }
+                    } else {
+                        good = false;
+                    }
                 }
             }
         }
@@ -295,36 +314,54 @@ impl Drop for Source {
                 }
             }
         }
-        let clear = self.buffer == 0
-            || self
-                .drv
-                .sbuf_status_raw(self.buffer)
-                .is_ok_and(|s| s[8] == 0 && s[9] == 0);
+
+        let clear = if self.buffer == 0 {
+            true
+        } else {
+            match self.drv.sbuf_status_raw(self.buffer) {
+                Ok(s) => s[8] == 0 && s[9] == 0,
+                Err(e) => {
+                    good = false;
+                    eprintln!("mkra: BS2K cleanup ring status: {e}");
+                    false
+                }
+            }
+        };
+        let mut buffer_destroyed = self.buffer == 0;
         if self.buffer != 0 {
-            if clear && !self.running {
+            if can_release_graph(clear, self.running, disconnected, good) {
                 check!("reset ring", self.drv.force_reset_buffer(self.buffer));
-                check!("destroy ring", self.drv.destroy_buffer(self.buffer));
+                if good {
+                    match self.drv.destroy_buffer(self.buffer) {
+                        Ok(()) => buffer_destroyed = true,
+                        Err(e) => {
+                            good = false;
+                            eprintln!("mkra: BS2K cleanup destroy ring: {e}");
+                        }
+                    }
+                }
             } else {
-                check!(
-                    "ring ownership",
-                    Err::<(), _>(err("retaining graph with live writer/readers")),
-                );
+                good = false;
+                eprintln!("mkra: BS2K cleanup retaining graph: ring/connection/reader state not proven clear");
             }
         }
-        let can_destroy_graph = clear && !self.running;
-        if self.device != 0 && can_destroy_graph {
+
+        // Each failure stops the remaining destructive steps. Never restore
+        // TSI after any owned graph resource failed to release.
+        if self.device != 0 && can_release_graph(buffer_destroyed, self.running, disconnected, good) {
             check!("destroy DEMUX", self.drv.destroy_device(self.device));
         }
-        if self.pipeline != 0 && can_destroy_graph {
+        if self.pipeline != 0 && can_release_graph(buffer_destroyed, self.running, disconnected, good) {
             check!("stop pipeline", self.drv.stop_pipeline(self.pipeline));
         }
-        if self.av != 0 && can_destroy_graph {
+        if self.av != 0 && can_release_graph(buffer_destroyed, self.running, disconnected, good) {
             check!("destroy AV_SYNC", self.drv.destroy_device(self.av));
         }
-        if self.pipeline != 0 && can_destroy_graph {
+        if self.pipeline != 0 && can_release_graph(buffer_destroyed, self.running, disconnected, good) {
             check!("destroy pipeline", self.drv.destroy_pipeline(self.pipeline));
         }
-        if should_restore_tsi(self.tsi_may_be_modified, can_destroy_graph, good) {
+        let graph_clear = can_release_graph(buffer_destroyed, self.running, disconnected, good);
+        if should_restore_tsi(self.tsi_may_be_modified, graph_clear, good) {
             if let Some(mapping) = self.mapping.take() {
                 check!("restore TSI", self.drv.restore_tsi_mapping(&mapping));
             }
@@ -354,6 +391,15 @@ mod tests {
         assert!(should_restore_tsi(true, true, true));
         assert!(!should_restore_tsi(true, false, true));
         assert!(!should_restore_tsi(true, true, false));
+    }
+
+    #[test]
+    fn graph_teardown_requires_disconnected_edge_and_successful_cleanup() {
+        assert!(can_release_graph(true, false, true, true));
+        assert!(!can_release_graph(true, false, false, true));
+        assert!(!can_release_graph(true, false, true, false));
+        assert!(!can_release_graph(true, true, true, true));
+        assert!(!can_release_graph(false, false, true, true));
     }
 
     #[test]
