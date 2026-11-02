@@ -438,3 +438,26 @@ and a post-restoration health check; a same-boot read-only baseline must also
 show an active native viewing state, no recorder/viewer/reservation conflict,
 and attributable frontend/graph ownership. Until those gates pass, do not
 attempt another capture.
+
+### R3 maintenance-switch preparation: offline only
+
+A separate Draft PR adds the reviewed maintenance-switch candidate and
+Runbook: [PR #3](https://github.com/Karin-Laboratory/mkra_4S-C00AS1/pull/3),
+[`docs/BS2K-MAINTENANCE-SWITCH.ja.md`](https://github.com/Karin-Laboratory/mkra_4S-C00AS1/blob/feat/bs2k-maintenance-graceful-shutdown-r3/docs/BS2K-MAINTENANCE-SWITCH.ja.md).
+It reuses the existing watcher/EPG scan locks and systemd timers and adds a
+graceful shutdown path to the integrated server. Offline host tests and an
+ARMv7 static build pass; no helper deployment or receiver interaction has
+been performed. It therefore does **not** change the trial decision.
+
+**Next BS2K trial remains NO-GO** until a separate maintenance window confirms
+all of the following from current evidence: (1) the target host, systemd unit
+files, watcher bundle/manifest, helper, and integrated binary hashes match the
+reviewed build; (2) recording, viewing, reservations, and both EPG scanners are
+idle for the full window; (3) receiver OEM/API state is healthy and a same-boot
+baseline attributes frontend, TSI, graph, readers, and lock owners; (4) the
+graceful build has been staged without replacing the active binary and its
+SIGTERM shutdown, source cleanup, and frontend-lock release are observed once;
+(5) post-stop baseline is clean before any capture; and (6) the exact previous
+timer states and API/proxy/EPG health can be restored and verified. Any
+unknown owner, baseline mismatch, failed cleanup, or failed restore means
+STOP/NO-GO. This preparation is not evidence that those gates now pass.
