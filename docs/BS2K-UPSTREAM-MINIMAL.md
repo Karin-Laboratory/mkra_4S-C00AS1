@@ -332,10 +332,11 @@ unavailable. No new BS2K attempt was authorized by that audit.
 
 After the earlier Telnet connection failed with `No route to host`, the owner
 reported the receiver had been in standby (red LED) and asked for another
-check. CT141 SSH succeeded and the existing guarded Telnet helper connected to
-the receiver. The helper source was reviewed; every receiver command below
-was submitted through its guarded `run()` path. No receiver-side write,
-retune, graph creation/destruction, process control, upload, or reset occurred.
+check. The management-container SSH connection succeeded and the existing
+guarded Telnet helper connected to the receiver. The helper source was
+reviewed; every receiver command below was submitted through its guarded
+`run()` path. No receiver-side write, retune, graph creation/destruction,
+process control, upload, or reset occurred.
 Private raw captures are retained outside GitHub with restrictive file modes.
 
 #### Management and owner state
