@@ -404,3 +404,37 @@ objects must still be preserved.
 still owns the frontend lock, the unit appeared to be in standby, and a
 comparable graph ownership baseline is unavailable. No new capture is
 authorized by this recheck.
+
+### R2 trial preflight (2026-11-02 09:04 JST): NO-GO, not executed
+
+The requested R2 five-second capture was stopped at the safety gate. The
+branch HEAD remained `43e834d0453d60783bce7de5cd0b8b3e5f2848a8`; its latest
+GitHub Actions build check was successful. This confirms source/CI state only,
+not current receiver readiness.
+
+The latest available same-morning receiver audit (08:55 JST) had found the
+integrated mkra holding the shared frontend flock with driver descriptors
+open, an active/waiting watcher timer, apparent standby, and unattributed
+graph objects without a comparable same-state ownership baseline. The tuner
+API's idle indication does not override these ownership observations. No newer
+read-only device observation was taken for this R2 preflight.
+
+The existing watcher documentation describes conditional RAM redeployment
+when the API is unhealthy; it does not define a maintenance pause/resume
+procedure for this deployed unit. Stopping the integrated process, changing
+the watcher timer/service, or killing either process therefore has no
+documented race-free recovery path. That fails the R2 requirement to prove
+both safe retirement and restoration before acting.
+
+**R2 result: NO-GO / NOT EXECUTED.** No receiver connection or command was
+made for this R2 attempt; no binary was built or uploaded, no process or
+watcher was stopped, and no tuning, graph, TSI, or device state was changed.
+There is no TS output to analyze. The prior audit's UNKNOWN ownership and
+standby observations remain historical evidence, not a fresh status claim.
+
+Reconsider only after a separately reviewed maintenance procedure documents
+and validates watcher pause/resume, integrated-server stop/start and rollback,
+and a post-restoration health check; a same-boot read-only baseline must also
+show an active native viewing state, no recorder/viewer/reservation conflict,
+and attributable frontend/graph ownership. Until those gates pass, do not
+attempt another capture.
