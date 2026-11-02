@@ -142,7 +142,7 @@ API/EPG healthが戻らない場合は`RESTORE_FAILED`と記録する。timerは
 ### R3 オフライン検証記録
 
 - `python3 tools/mkra-watch/test_maintenance_switch.py`: **14/14 PASS**（fake systemd/flock。timer競合、既存lock、途中失敗、recording拒否、二重開始、復元中断・部分復元など）。
-- `python3 -m unittest discover -s tools/mkra-watch -p 'test_*.py'`: R4.5時点 **44/44 PASS**（legacy/v2 runtime contract、runtime install/rollback、rollback資材破損拒否、実行中ELF hash確認を含む）。
+- `python3 -m unittest discover -s tools/mkra-watch -p 'test_*.py'`: R4.5時点 **45/45 PASS**（legacy/v2 runtime contract、runtime install/rollback、rollback資材破損拒否、helper pin、実行中ELF hash確認を含む）。
 - `cargo test --locked`: **216 passed / 0 failed**。
 - `./build-device.sh --locked`: **PASS**。成果物はARM 32-bit EABI5、musl向け、静的リンク。`readelf`で`INTERP` segmentなし。成果物SHA-256: `1c38a830aa33172c54b29cbcdb395feb0c8b3acc53949a7d0a814d5030b26b40`。
 - `git diff --check`: **PASS**。

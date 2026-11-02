@@ -156,6 +156,12 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertIn("READ_ONLY_PREFLIGHT_PASS", output.getvalue())
         self.assertFalse(switch.MAINTENANCE_STATE.exists())
 
+    def test_runtime_switch_helper_is_pinned_to_reviewed_implementation(self):
+        self.assertEqual(switch.runtime_switch_fingerprint(), switch.RUNTIME_SWITCH_APPROVED_SHA256)
+        with mock.patch.object(switch, "RUNTIME_SWITCH_APPROVED_SHA256", "0" * 64), \
+             self.assertRaises(switch.SafetyError):
+            switch.runtime_switch_fingerprint()
+
 
 if __name__ == "__main__":
     unittest.main()

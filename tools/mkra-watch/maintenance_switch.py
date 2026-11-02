@@ -25,6 +25,7 @@ SCAN_LOCK = pathlib.Path("/var/lib/bs4k-epg/scan.lock")
 MAINTENANCE_STATE = STATE_DIR / "maintenance.json"
 RUNTIME_DIR = pathlib.Path("/usr/local/libexec/4s-mkra-watch")
 SWITCH_SCRIPT = pathlib.Path(__file__).resolve()
+SWITCH_RUNTIME_SCRIPT = pathlib.Path(__file__).with_name("switch_runtime.py")
 TIMERS = (
     "4s-mkra-watch.timer",
     "bs2k-epg-scan.timer",
@@ -53,6 +54,7 @@ MANIFEST_FIELDS = {
     "schema", "binary_size", "binary_sha256", "binary_md5",
     "config_sha256", "config_md5", "watcher_sha256", "helper_sha256",
 }
+RUNTIME_SWITCH_APPROVED_SHA256 = "61d6cd8ad1ed68e05616b86c93c3193e3b6e95cc02af5234054408b5e4f41799"
 
 
 class SafetyError(RuntimeError):
@@ -91,6 +93,23 @@ def digest(path):
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def runtime_switch_fingerprint():
+    try:
+        info = SWITCH_RUNTIME_SCRIPT.lstat()
+    except OSError as exc:
+        raise SafetyError("runtime switch helper is missing") from exc
+    if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+        raise SafetyError("runtime switch helper is not a regular file")
+    if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise SafetyError("runtime switch helper is group/world writable")
+    if os.geteuid() == 0 and info.st_uid != 0:
+        raise SafetyError("runtime switch helper is not root-owned")
+    actual = digest(SWITCH_RUNTIME_SCRIPT)
+    if actual != RUNTIME_SWITCH_APPROVED_SHA256:
+        raise SafetyError("runtime switch helper differs from the reviewed R4.5 implementation")
+    return actual
 
 
 def _runtime_file(directory, name):
@@ -281,6 +300,7 @@ def snapshot():
         },
         "watcher_bundle": runtime_fingerprint(),
         "maintenance_tool_sha256": digest(SWITCH_SCRIPT),
+        "runtime_switch_sha256": runtime_switch_fingerprint(),
     }
 
 
@@ -376,6 +396,8 @@ def same_fingerprint(state):
         raise SafetyError("watcher runtime is neither the saved original nor the pre-approved target bundle")
     if digest(SWITCH_SCRIPT) != state["maintenance_tool_sha256"]:
         raise SafetyError("maintenance tool changed during maintenance")
+    if runtime_switch_fingerprint() != state["runtime_switch_sha256"]:
+        raise SafetyError("runtime switch helper changed during maintenance")
 
 
 def load_watcher():

@@ -46,6 +46,7 @@ python3 tools/mkra-watch/make_bundle.py \
 
 ## runtime切替・rollback tool
 
+- `maintenance_switch.py`と`switch_runtime.py`は同じ管理ディレクトリへ別名で配置し、実行前に両方のsource SHA-256を照合する。レビュー済みhashは順に`68b324a0dd6ac70b071c1902f5fbb74a9c3ec246ca2f2b68d9b8332d48e9c064`、`61d6cd8ad1ed68e05616b86c93c3193e3b6e95cc02af5234054408b5e4f41799`。`maintenance_switch.py`はR4.5 helperを後者のhashに固定し、保守記録にもhelper hashを保存する。異なるhashは拒否する。
 - `maintenance_switch.py preflight --target-bundle DIR` はruntime fingerprint、unit/timer状態、API/tuner、recording/reservation/scanner状態を読む。file/stateを書かず、flockも取得しないため、この結果はsnapshotでありrace-freeな許可ではない。`enter`は既存watcher/scan lockを取って再検証する。
 - `enter --confirm-preflight --target-bundle DIR`は現在runtimeとschema v2 targetの両fingerprintをmaintenance stateへ記録してから、既存lockの取得とtimer待機へ進む。
 - `switch_runtime.py install --bundle DIR`はmaintenance shellを終了した後に実行する。maintenance stateが`SESSION_EXITED`、関連timerがdisabled/inactive、serviceがinactive、watcher/scan lockを取得できること、bundleが事前承認hashと同じことを要求する。
@@ -72,7 +73,7 @@ python3 tools/mkra-watch/make_bundle.py \
 - runtime switch test: 事前target不一致拒否、bundle install後の旧profile rollback、途中失敗時の自動rollback、rollback資材改変時の復元拒否を確認。
 - read-only preflight test: state writeやflockなし、timer/service/API read checksのみであることを確認。
 - running image verifier test: process pathが固定runtimeであり、`/proc/<pid>/exe` SHAがtarget pinと一致する場合だけPASS。
-- `python3 -m unittest discover -s tools/mkra-watch -p 'test_*.py'`: **44/44 PASS**（maintenance switch testsを含む）。
+- `python3 -m unittest discover -s tools/mkra-watch -p 'test_*.py'`: **45/45 PASS**（maintenance switch testsを含む）。
 - `cargo test --locked`: **216 passed / 0 failed**。
 - `./build-device.sh --locked`: **PASS**。ELF32 ARM EABI5、静的リンク、`INTERP`なし。SHA-256 `1c38a830aa33172c54b29cbcdb395feb0c8b3acc53949a7d0a814d5030b26b40`。
 - 生成schema v2 bundleを独立プロセスで検証し、`watch.verify_bundle()`がPASS。watcher self-testもPASS。

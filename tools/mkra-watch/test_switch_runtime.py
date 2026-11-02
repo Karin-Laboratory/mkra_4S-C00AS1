@@ -126,6 +126,7 @@ class RuntimeSwitchTests(unittest.TestCase):
             "host_boot_id": "boot-a",
             "watcher_bundle": self.before,
             "target_watcher_bundle": self.target,
+            "runtime_switch_sha256": maintenance.runtime_switch_fingerprint(),
             "timers": {unit: {"active": False, "enabled": False} for unit in maintenance.TIMERS},
         })
 

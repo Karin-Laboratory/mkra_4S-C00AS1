@@ -54,6 +54,8 @@ def _paused_state():
         raise maintenance.SafetyError("runtime switch requires a completed maintenance shell")
     if not state.get("target_watcher_bundle"):
         raise maintenance.SafetyError("no exact target bundle was pre-authorized at enter")
+    if maintenance.runtime_switch_fingerprint() != state.get("runtime_switch_sha256"):
+        raise maintenance.SafetyError("runtime switch helper differs from the maintenance-time pin")
     for unit in maintenance.TIMERS:
         if maintenance.active_state(unit) != "inactive" or maintenance.enabled_state(unit) != "disabled":
             raise maintenance.SafetyError("all watcher and scanner timers must remain disabled")
