@@ -142,3 +142,37 @@ API/EPG healthが戻らない場合は`RESTORE_FAILED`と記録する。timerは
 - systemd実機unit適用、管理ホストへのtool配置、実機signal応答、driver/TSI/graph復元、watcher正常復帰: **UNKNOWN（未実施）**。
 
 このため本Runbookと保守helperはオフライン検証済みの候補であり、運用へ配備済みとは扱わない。Phase 1相当の実機保守切替へ進む前に、管理ホストのunit・bundle hash照合、読取り専用A baseline、保守窓、当該graceful buildの限定配備を別途レビューし、最初のSIGTERMで正常終了とlock解放を実測する必要がある。
+
+### R4 実機受入前の読取り専用確認（2026-11-02 JST）
+
+判定：**BLOCKED / NO-GO**。本確認ではサービス停止・再起動、timer変更、プロセスsignal、選局、TSI/graph変更を行っていない。BS2K試験も**NOT RUN**。
+
+管理ホストから既存の管理コンテナ、そこに導入済みのguarded Telnet helperを通じて対象機へ到達した。新規認証情報・接続経路は使用していない。出力はprivate mode `0600` のログに保存し、この公開記録ではIP、ホスト名、PID、プロセス引数、driver handleを省略した。
+
+| 確認項目 | 観測 | 判定 |
+| --- | --- | --- |
+| OEM fingerprint | tuner、abs、xcdrv、libvixsの4対象すべてがPR #2の期待値と一致 | PASS |
+| OEM/driver | OEMプロセス4種、driver device、IPCファイルが存在 | PASS（存在確認のみ） |
+| 統合版 | 現行実行ファイルSHA-256 `d5d8511cc530fd0c0375fca34f3604a2e8fd1cb76b49e819327ffe5a8d40a9f3`。実行中プロセスがdriver descriptorと共有frontend write-lockを保持 | 観測済み。停止不可 |
+| graceful build | R3で検証したSHA-256 `1c38a830aa33172c54b29cbcdb395feb0c8b3acc53949a7d0a814d5030b26b40` と現行実行ファイルは不一致 | BLOCKED。現行プロセスへTERMを送らない |
+| API/利用状況 | tuner `isUsing=true`、利用者1件。録画0件、予約3件。予約一覧だけでは作業窓全体の無競合を証明できず、利用中表示も解消していない | BLOCKED |
+| 電源/受信状態 | 読取り診断がstandby（赤LED）相当を報告。強制的な電源状態変更はしない | BLOCKED |
+| watcher/EPG scanner | watcher timerおよびBS2K/BS4K scanner timerはactive/enabled。one-shot serviceは観測時inactive。watcher healthはhealthy | watcher競合条件を再評価するまで変更不可 |
+| R3 runtime契約 | 現行管理環境に`bundle.json`が存在せず、R3 helperが要求するruntime fingerprintを構成できない | BLOCKED。`enter`は実行しない |
+| TSI | `0x6000=0x01000000`、`0x6004=0x00000001`、`0x6008=0x01000100`、`0x600c=0x00000200`、`0x61f0=0x00000010`。過去の既知正常値と一致 | 値の一致は観測。現在のclean ownershipを証明しない |
+| graph | devices 11、buffers 12、pipelines 2、ports 22を読取り観測 | 同一boot baselineなし。由来・所有者UNKNOWN |
+
+過去の既知正常TSI値は照合できたが、graphについて同一boot・同一運用状態の正常baselineは見つかっていない。したがって2 pipelineを残留異常と断定も、通常状態と認定もできない。frontend assignmentの独立した正常baselineも未確立である。APIの利用者数、lock保持、driver descriptorとstandby警告の組合せは、保守開始条件を満たさない。
+
+R3 helperを一時的な新規`/run`ディレクトリへ隔離配置し、SHA-256 `efd603bec580c329ca2a30e711b9f769736f40369cb3d529884ea542ae4ee181` と`--help`を確認した。systemd unit/timerやmanifestへの登録はしていない。副作用調査で`enter`はsnapshot作成後にtimer変更等を行うことを確認したため、実行していない。watcher `--dry-run`にもstate/lock更新の副作用があるため使用していない。
+
+#### R5へ進む前に必要な条件
+
+1. 保守時間全体で録画・視聴がなく、予約およびEPG scannerと競合しないことを再確認する。API tuner利用者が0で、対象機が通常稼働状態であること。
+2. 現行統合版とwatcher bundle/manifestを一体として特定し、R3 helperが参照する`bundle.json`等のruntime契約を解決する。実際に稼働するgraceful対応バイナリのSHA・起動ログを確認し、現行プロセスを置換する手順を別途レビューする。
+3. watcher/scanner timer、実行中watcher、共通lockの状態を、保守切替helperと同一バージョンで矛盾なく確認する。
+4. 同一bootの停止前baselineを取り、frontend assignment、全TSI値、graphのowner・参照関係、reader/bufferを比較可能にする。graph件数だけでclean判定しない。
+5. graceful停止は対応ビルドを特定し、最初の一度だけ行う。停止後にPID消失、log上のdrain/cleanup、frontend lock/descriptor解放、TSI/FEM/graph基線復帰をすべて確認する。いずれかがunknownなら停止状態を維持し、強制cleanupしない。
+6. 受入後の復帰は保存済みの元bundle/hash/argvを照合してから行い、API・lock・watcher health・録画予約状態を確認する。
+
+R4では実機状態の取得まで到達したが、上記の独立ブロッカーにより保守移行は実施していない。復帰試験のPASSは未取得である。
