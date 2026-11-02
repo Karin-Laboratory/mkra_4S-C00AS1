@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import socket
 import subprocess
 import sys
@@ -194,11 +195,43 @@ def remote_binary_matches(telnet):
     return (remote_file_matches(telnet, REMOTE, EXPECTED_SHA256), "binary SHA-256 check")
 
 
+def running_binary_matches(telnet):
+    """Read back the executable image used by the one expected mkra process."""
+    _operating, processes = read_only_device_state(telnet)
+    if len(processes) != 1:
+        raise RuntimeError("expected exactly one watcher-owned mkra process")
+    match = re.search(r"/proc/(\d+)/exe -> (\S+)$", processes[0].strip())
+    if not match or match.group(2) != REMOTE:
+        raise RuntimeError("running mkra executable path is not the pinned runtime")
+    pid = match.group(1)
+    output = telnet.run("sha256sum /proc/%s/exe" % pid).strip().split()
+    if not output or output[0] != EXPECTED_SHA256:
+        raise RuntimeError("running mkra executable image hash mismatch")
+    return EXPECTED_SHA256
+
+
 def verify_bundle():
+    if MANIFEST.get("schema") != 2:
+        raise RuntimeError("runtime bundle manifest missing or unsupported")
+    required = {
+        "binary_size", "binary_sha256", "binary_md5", "config_sha256",
+        "config_md5", "watcher_sha256", "helper_sha256",
+    }
+    if set(MANIFEST) != required | {"schema"}:
+        raise RuntimeError("runtime bundle manifest fields invalid")
     if BINARY.stat().st_size != EXPECTED_SIZE or hashlib.sha256(BINARY.read_bytes()).hexdigest() != EXPECTED_SHA256:
         raise RuntimeError("bundled binary integrity failure")
+    if hashlib.md5(BINARY.read_bytes()).hexdigest() != EXPECTED_MD5:
+        raise RuntimeError("bundled binary transfer hash mismatch")
     if hashlib.sha256(CONFIG.read_bytes()).hexdigest() != CONFIG_SHA256:
         raise RuntimeError("bundled BS channel configuration integrity failure")
+    if hashlib.md5(CONFIG.read_bytes()).hexdigest() != CONFIG_MD5:
+        raise RuntimeError("bundled BS channel transfer hash mismatch")
+    if hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest() != MANIFEST["watcher_sha256"]:
+        raise RuntimeError("bundled watcher integrity failure")
+    helper = HERE / "sharp_telnet.py"
+    if hashlib.sha256(helper.read_bytes()).hexdigest() != MANIFEST["helper_sha256"]:
+        raise RuntimeError("bundled telnet helper integrity failure")
 
 
 def deploy_files(telnet, boot_id):
@@ -405,12 +438,20 @@ if __name__ == "__main__":
     try:
         if len(sys.argv) > 1 and sys.argv[1] == "--self-test":
             self_test()
+        elif len(sys.argv) > 1 and sys.argv[1] == "--verify-runtime":
+            verify_bundle()
+            from sharp_telnet import connect
+            telnet = connect(TUNER_HOST, TELNET_PORT, timeout=6)
+            try:
+                print("RUNNING_RUNTIME_SHA256=" + running_binary_matches(telnet))
+            finally:
+                telnet.close()
         else:
             if len(sys.argv) > 1 and sys.argv[1] != "--dry-run":
                 raise RuntimeError("unknown option")
             sys.exit(run_once(dry_run="--dry-run" in sys.argv))
     except Exception as exc:
-        if len(sys.argv) <= 1 or sys.argv[1] != "--self-test":
+        if len(sys.argv) <= 1 or sys.argv[1] not in ("--self-test", "--verify-runtime"):
             state = load_state()
             defer_failure(state, str(exc))
         print("ERROR: " + repr(exc), file=sys.stderr)

@@ -7,11 +7,13 @@ timer. `resume --confirm-clean` only restores the timer and invokes the
 existing oneshot watcher after an operator has checked the receiver baseline.
 """
 import fcntl
+import ast
 import hashlib
 import json
 import os
 import pathlib
 import shlex
+import stat
 import subprocess
 import sys
 import tempfile
@@ -32,6 +34,25 @@ WATCH_TIMER = TIMERS[0]
 SERVICE = "4s-mkra-watch.service"
 SCANNER_SERVICES = ("bs2k-epg-scan.service", "bs4k-epg-scan.service")
 RESTORE_TIMEOUT = 900
+
+# R4 captured this exact deployed legacy watcher and helper. That watcher
+# embeds hash pins for the old executable and channel table. This profile is a
+# narrowly scoped compatibility exception; it is not a generic trust-on-first-
+# use fallback. Any changed file requires a reviewed modern bundle instead.
+LEGACY_R4_PROFILE = {
+    "watcher_sha256": "af4111e3079f49e5ad0c104bfd2dd994cb2fa20303705068051e7d07a6e56cb0",
+    "helper_sha256": "33cb09a80f4a7eab7d31182deefec0f28ccc3d78fcd386b803136030f1268705",
+    "binary_size": 984708,
+    "binary_sha256": "d5d8511cc530fd0c0375fca34f3604a2e8fd1cb76b49e819327ffe5a8d40a9f3",
+    "binary_md5": "48a383d70c8e463eec7d5e54ccaf47cc",
+    "config_sha256": "904ad31a6ff5937261d3cbf251713190bf52ab82f12ab3597a44a10a1b950322",
+    "config_md5": "036bc3e5137d063ee58365bcccc95d3a",
+}
+RUNTIME_FILES = ("watch.py", "sharp_telnet.py", "mkra", "bs-channels.tsv")
+MANIFEST_FIELDS = {
+    "schema", "binary_size", "binary_sha256", "binary_md5",
+    "config_sha256", "config_md5", "watcher_sha256", "helper_sha256",
+}
 
 
 class SafetyError(RuntimeError):
@@ -72,33 +93,138 @@ def digest(path):
     return h.hexdigest()
 
 
-def runtime_fingerprint():
-    manifest_path = RUNTIME_DIR / "bundle.json"
-    watcher = RUNTIME_DIR / "watch.py"
-    binary = RUNTIME_DIR / "mkra"
-    config = RUNTIME_DIR / "bs-channels.tsv"
+def _runtime_file(directory, name):
+    directory = pathlib.Path(directory)
+    path = directory / name
+    try:
+        dir_info = directory.lstat()
+        info = path.lstat()
+    except OSError as exc:
+        raise SafetyError("runtime file is missing: " + name) from exc
+    if not stat.S_ISDIR(dir_info.st_mode) or stat.S_ISLNK(dir_info.st_mode):
+        raise SafetyError("runtime directory is not a real directory")
+    if dir_info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise SafetyError("runtime directory is group/world writable")
+    if os.geteuid() == 0 and dir_info.st_uid != 0:
+        raise SafetyError("runtime directory is not root-owned")
+    if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+        raise SafetyError("runtime file is not a regular file: " + name)
+    if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise SafetyError("runtime file is group/world writable: " + name)
+    if os.geteuid() == 0 and info.st_uid != 0:
+        raise SafetyError("runtime file is not root-owned: " + name)
+    return path
+
+
+def _manifest_values(directory):
+    manifest_path = _runtime_file(directory, "bundle.json")
     try:
         manifest = json.loads(manifest_path.read_text())
-        checks = (
-            (binary, "binary_size", "binary_sha256"),
-            (config, None, "config_sha256"),
-        )
-        for path, size_key, hash_key in checks:
-            if size_key and path.stat().st_size != manifest[size_key]:
-                raise SafetyError("watcher bundle binary size mismatch")
-            if digest(path) != manifest[hash_key]:
-                raise SafetyError("watcher bundle content hash mismatch")
-        return {
-            name: digest(path)
-            for name, path in (
-                ("watcher", watcher),
-                ("manifest", manifest_path),
-                ("binary", binary),
-                ("config", config),
-            )
-        }
-    except (OSError, ValueError, KeyError) as exc:
-        raise SafetyError("watcher bundle cannot be verified") from exc
+    except (OSError, ValueError) as exc:
+        raise SafetyError("runtime bundle manifest is unreadable") from exc
+    if not isinstance(manifest, dict) or manifest.get("schema") != 2:
+        raise SafetyError("runtime bundle manifest schema is unsupported")
+    if set(manifest) != MANIFEST_FIELDS:
+        raise SafetyError("runtime bundle manifest fields are incomplete or unexpected")
+    for key in ("binary_size",):
+        if not isinstance(manifest.get(key), int) or manifest[key] <= 0:
+            raise SafetyError("runtime bundle manifest has invalid size")
+    for key in MANIFEST_FIELDS - {"schema", "binary_size"}:
+        value = manifest.get(key)
+        expected_len = 32 if key.endswith("md5") else 64
+        if not isinstance(value, str) or len(value) != expected_len or any(c not in "0123456789abcdef" for c in value):
+            raise SafetyError("runtime bundle manifest has invalid digest")
+    return manifest, manifest_path
+
+
+def fingerprint_bundle_directory(directory):
+    """Verify a modern bundle without importing or executing its contents."""
+    directory = pathlib.Path(directory)
+    manifest, manifest_path = _manifest_values(directory)
+    paths = {name: _runtime_file(directory, name) for name in RUNTIME_FILES}
+    checks = {
+        "binary_size": paths["mkra"].stat().st_size,
+        "binary_sha256": digest(paths["mkra"]),
+        "binary_md5": hashlib.md5(paths["mkra"].read_bytes()).hexdigest(),
+        "config_sha256": digest(paths["bs-channels.tsv"]),
+        "config_md5": hashlib.md5(paths["bs-channels.tsv"].read_bytes()).hexdigest(),
+        "watcher_sha256": digest(paths["watch.py"]),
+        "helper_sha256": digest(paths["sharp_telnet.py"]),
+    }
+    if any(manifest[key] != value for key, value in checks.items()):
+        raise SafetyError("runtime bundle content does not match its manifest")
+    return {
+        "profile": "bundle-v2",
+        "manifest_sha256": digest(manifest_path),
+        "files": {name: digest(path) for name, path in paths.items()},
+    }
+
+
+def _literal_watcher_pins(path):
+    """Read legacy constants from Python AST; never import the old watcher."""
+    try:
+        tree = ast.parse(path.read_text())
+    except (OSError, SyntaxError) as exc:
+        raise SafetyError("legacy watcher source cannot be parsed safely") from exc
+    wanted = {"EXPECTED_SIZE", "EXPECTED_SHA256", "EXPECTED_MD5", "CONFIG_SHA256", "CONFIG_MD5"}
+    found = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            name = node.targets[0].id
+            if name in wanted:
+                if name in found:
+                    raise SafetyError("legacy watcher has duplicate runtime pins")
+                try:
+                    found[name] = ast.literal_eval(node.value)
+                except (ValueError, TypeError) as exc:
+                    raise SafetyError("legacy watcher pin is not a literal") from exc
+    if set(found) != wanted:
+        raise SafetyError("legacy watcher does not contain the complete pin set")
+    return found
+
+
+def _legacy_r4_fingerprint(directory):
+    paths = {name: _runtime_file(directory, name) for name in RUNTIME_FILES}
+    profile = LEGACY_R4_PROFILE
+    if digest(paths["watch.py"]) != profile["watcher_sha256"]:
+        raise SafetyError("unmanifested watcher is not the reviewed R4 legacy version")
+    pins = _literal_watcher_pins(paths["watch.py"])
+    expected_pins = {
+        "EXPECTED_SIZE": profile["binary_size"],
+        "EXPECTED_SHA256": profile["binary_sha256"],
+        "EXPECTED_MD5": profile["binary_md5"],
+        "CONFIG_SHA256": profile["config_sha256"],
+        "CONFIG_MD5": profile["config_md5"],
+    }
+    if pins != expected_pins:
+        raise SafetyError("legacy watcher inline pins differ from the reviewed R4 profile")
+    actual = {
+        "binary_size": paths["mkra"].stat().st_size,
+        "binary_sha256": digest(paths["mkra"]),
+        "binary_md5": hashlib.md5(paths["mkra"].read_bytes()).hexdigest(),
+        "config_sha256": digest(paths["bs-channels.tsv"]),
+        "config_md5": hashlib.md5(paths["bs-channels.tsv"].read_bytes()).hexdigest(),
+        "helper_sha256": digest(paths["sharp_telnet.py"]),
+    }
+    if actual != {key: profile[key] for key in actual}:
+        raise SafetyError("unmanifested runtime does not match the reviewed R4 legacy profile")
+    return {
+        "profile": "r4-legacy-inline-pins",
+        "manifest_sha256": None,
+        "files": {name: digest(path) for name, path in paths.items()},
+    }
+
+
+def runtime_fingerprint():
+    return fingerprint_runtime_directory(RUNTIME_DIR)
+
+
+def fingerprint_runtime_directory(directory):
+    directory = pathlib.Path(directory)
+    manifest_path = directory / "bundle.json"
+    if manifest_path.exists() or manifest_path.is_symlink():
+        return fingerprint_bundle_directory(directory)
+    return _legacy_r4_fingerprint(directory)
 
 
 def host_boot_id():
@@ -241,8 +367,13 @@ def same_fingerprint(state):
     }
     if current_units != state["unit_files"]:
         raise SafetyError("watcher/scanner systemd unit changed during maintenance")
-    if runtime_fingerprint() != state["watcher_bundle"]:
-        raise SafetyError("watcher bundle changed during maintenance")
+    current_runtime = runtime_fingerprint()
+    allowed_runtimes = [state["watcher_bundle"]]
+    target_runtime = state.get("target_watcher_bundle")
+    if target_runtime is not None:
+        allowed_runtimes.append(target_runtime)
+    if current_runtime not in allowed_runtimes:
+        raise SafetyError("watcher runtime is neither the saved original nor the pre-approved target bundle")
     if digest(SWITCH_SCRIPT) != state["maintenance_tool_sha256"]:
         raise SafetyError("maintenance tool changed during maintenance")
 
@@ -282,7 +413,7 @@ def read_only_preflight():
         raise SafetyError("recording/reservation/scanner preflight: " + reason)
 
 
-def enter(confirm_preflight=False):
+def enter(confirm_preflight=False, target_bundle=None):
     if os.geteuid() != 0:
         raise SafetyError("run this command with host administrator privileges")
     if not confirm_preflight:
@@ -295,6 +426,8 @@ def enter(confirm_preflight=False):
         if old and old.get("phase") not in ("NORMAL", "RESTORED"):
             raise SafetyError("an earlier maintenance attempt is unresolved")
         state = snapshot()
+        if target_bundle is not None:
+            state["target_watcher_bundle"] = fingerprint_bundle_directory(target_bundle)
         read_only_preflight()
         if not state["timers"][WATCH_TIMER]["enabled"] or not state["timers"][WATCH_TIMER]["active"]:
             raise SafetyError("watcher timer must begin enabled and active")
@@ -448,6 +581,46 @@ def status():
     for unit in TIMERS:
         print(unit + "=" + active_state(unit) + "/" + enabled_state(unit))
     print("service=" + active_state(SERVICE))
+    try:
+        print("runtime_profile=" + runtime_fingerprint()["profile"])
+    except SafetyError as exc:
+        print("runtime_profile=BLOCKED (" + str(exc) + ")")
+
+
+def preflight(target_bundle=None):
+    """Read-only host/API preflight. It takes no lock and changes no files."""
+    if os.geteuid() != 0:
+        raise SafetyError("run this command with host administrator privileges")
+    state = read_state()
+    if state and state.get("phase") not in ("NORMAL", "RESTORED"):
+        raise SafetyError("an earlier maintenance attempt is unresolved")
+    current = runtime_fingerprint()
+    units = {
+        unit: {
+            "active": active_state(unit),
+            "enabled": enabled_state(unit),
+            "sha256": unit_fingerprint(unit)["sha256"],
+        }
+        for unit in (SERVICE, *SCANNER_SERVICES, *TIMERS)
+    }
+    if active_state(SERVICE) != "inactive" or any(
+        active_state(unit) != "inactive" for unit in SCANNER_SERVICES
+    ):
+        raise SafetyError("watcher or EPG scanner service is active")
+    if not (
+        units[WATCH_TIMER]["active"] == "active"
+        and units[WATCH_TIMER]["enabled"] == "enabled"
+    ):
+        raise SafetyError("watcher timer is not in its expected enabled/active state")
+    read_only_preflight()
+    target = fingerprint_bundle_directory(target_bundle) if target_bundle else None
+    print(json.dumps({
+        "result": "READ_ONLY_PREFLIGHT_PASS",
+        "current_runtime": current,
+        "target_runtime": target,
+        "units": units,
+        "note": "snapshot only; enter repeats safety checks while holding shared locks",
+    }, sort_keys=True, indent=2))
 
 
 def main(argv=None):
@@ -457,15 +630,21 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     enter_parser = sub.add_parser("enter", help="pause timer and open a lock-holding maintenance shell")
     enter_parser.add_argument("--confirm-preflight", action="store_true")
+    enter_parser.add_argument("--target-bundle", type=pathlib.Path,
+                              help="pre-authorize one exact schema-v2 runtime bundle for an offline-controlled migration")
     resume_parser = sub.add_parser("resume", help="restore watcher after clean-state review")
     resume_parser.add_argument("--confirm-clean", action="store_true")
+    preflight_parser = sub.add_parser("preflight", help="read-only runtime, unit, API and reservation checks")
+    preflight_parser.add_argument("--target-bundle", type=pathlib.Path)
     sub.add_parser("status", help="show local watcher maintenance state")
     args = parser.parse_args(argv)
     try:
         if args.command == "enter":
-            enter(args.confirm_preflight)
+            enter(args.confirm_preflight, args.target_bundle)
         elif args.command == "resume":
             resume(args.confirm_clean)
+        elif args.command == "preflight":
+            preflight(args.target_bundle)
         else:
             status()
         return 0

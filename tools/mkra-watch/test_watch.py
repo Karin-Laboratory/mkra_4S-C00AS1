@@ -46,7 +46,10 @@ class WatchTests(unittest.TestCase):
         self.tmp=tempfile.TemporaryDirectory();self.root=pathlib.Path(self.tmp.name);self.patches=[]
         for name,value in [('STATE_DIR',self.root),('STATE_FILE',self.root/'state.json'),('LOCK_FILE',self.root/'watch.lock'),('SCAN_LOCK',self.root/'scan.lock')]:self.set(name,value)
         binary=self.root/'mkra';binary.write_bytes(b'test binary');config=self.root/'channels.tsv';config.write_bytes(b'test channels')
-        for name,value in [('BINARY',binary),('CONFIG',config),('EXPECTED_SIZE',binary.stat().st_size),('EXPECTED_SHA256',hashlib.sha256(binary.read_bytes()).hexdigest()),('EXPECTED_MD5',hashlib.md5(binary.read_bytes()).hexdigest()),('CONFIG_SHA256',hashlib.sha256(config.read_bytes()).hexdigest()),('CONFIG_MD5',hashlib.md5(config.read_bytes()).hexdigest())]:self.set(name,value)
+        watcher=self.root/'watch.py';watcher.write_bytes(b'watch source');helper=self.root/'sharp_telnet.py';helper.write_bytes(b'helper source')
+        self.set('HERE',self.root);self.set('__file__',str(watcher))
+        manifest={'schema':2,'binary_size':binary.stat().st_size,'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),'binary_md5':hashlib.md5(binary.read_bytes()).hexdigest(),'config_sha256':hashlib.sha256(config.read_bytes()).hexdigest(),'config_md5':hashlib.md5(config.read_bytes()).hexdigest(),'watcher_sha256':hashlib.sha256(watcher.read_bytes()).hexdigest(),'helper_sha256':hashlib.sha256(helper.read_bytes()).hexdigest()}
+        for name,value in [('BINARY',binary),('CONFIG',config),('MANIFEST',manifest),('EXPECTED_SIZE',binary.stat().st_size),('EXPECTED_SHA256',manifest['binary_sha256']),('EXPECTED_MD5',manifest['binary_md5']),('CONFIG_SHA256',manifest['config_sha256']),('CONFIG_MD5',manifest['config_md5'])]:self.set(name,value)
     def set(self,name,value):
         p=patch.object(w,name,value);p.start();self.patches.append(p)
     def tearDown(self):
@@ -56,8 +59,24 @@ class WatchTests(unittest.TestCase):
         status={'process':{'pid':7,'versions':{'mkra':'0.1.0'}}};tuners=[{'index':0,'isAvailable':True,'isFault':False,'isUsing':True}]
         def fetch(ids):return lambda url:status if url.endswith('/status') else ([{'id':i} for i in ids] if url.endswith('/services') else tuners)
         self.assertTrue(w.api_healthy(fetch(w.REQUIRED_BS|{1100101}))[0]);self.assertFalse(w.api_healthy(fetch({1100101}))[0])
-    def test_bundle_pins_include_channel_configuration(self):
+    def test_bundle_v2_pins_binary_config_watcher_and_helper(self):
         w.verify_bundle();w.CONFIG.write_bytes(b'wrong');self.assertRaises(RuntimeError,w.verify_bundle)
+        w.CONFIG.write_bytes(b'test channels');(self.root/'watch.py').write_bytes(b'wrong watcher');self.assertRaises(RuntimeError,w.verify_bundle)
+        (self.root/'watch.py').write_bytes(b'watch source');(self.root/'sharp_telnet.py').write_bytes(b'wrong helper');self.assertRaises(RuntimeError,w.verify_bundle)
+    def test_running_image_readback_requires_exact_path_and_binary_hash(self):
+        remote=Mock();line='lrwxrwxrwx 1 root root 0 /proc/321/exe -> '+w.REMOTE
+        remote.run.return_value=w.EXPECTED_SHA256+' /proc/321/exe'
+        with patch.object(w,'read_only_device_state',return_value=(True,[line])):
+            self.assertEqual(w.running_binary_matches(remote),w.EXPECTED_SHA256)
+        remote.run.assert_called_once_with('sha256sum /proc/321/exe')
+        remote.run.reset_mock()
+        bad_path=line.replace(w.REMOTE,'/tmp/mt/other')
+        with patch.object(w,'read_only_device_state',return_value=(True,[bad_path])),self.assertRaises(RuntimeError):
+            w.running_binary_matches(remote)
+        remote.run.assert_not_called()
+        remote.run.return_value='0'*64+' /proc/321/exe'
+        with patch.object(w,'read_only_device_state',return_value=(True,[line])),self.assertRaises(RuntimeError):
+            w.running_binary_matches(remote)
     def test_recording_and_schedule_safety(self):
         now=1800000000000
         self.assertFalse(w.parse_recordings_safe([], [{'id':1}],now)[0])

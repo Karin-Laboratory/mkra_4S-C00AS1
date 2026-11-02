@@ -18,6 +18,8 @@ Status: **オフライン設計・試験済み。実機適用は未検証。**
 - 現在のsystemd unit、timer enable/active状態、watcher bundleを検査できる。異なるunit/hashならSTOPする。
 - オフライン試験済みの `maintenance_switch.py` を管理ホストへ別途安全に配置し、配布SHA-256を照合済み。
 
+旧R4 runtimeのwatcher切替だけを行う場合は、[`R4.5移行キット`](BS2K-R4.5-MIGRATION-KIT.ja.md)の完全一致legacy profileとschema v2 target bundleを使う。legacyの稼働中受信機processへはsignalを送らず、host runtime切替・復帰を受信機の計画的power OFF/ONと別段階にする。通常の保守試験で受信機serverを停止する場合、下記Phase Cのgraceful build条件は引き続き必須。
+
 この版では新しいdaemonや永久的なpause設定を追加しない。既存watcherの `watch.lock`、EPG scanner共通の`scan.lock`、systemd timer、既存guard helperを使う。
 
 ## 起動と所有権の根拠
@@ -63,7 +65,8 @@ Status: **オフライン設計・試験済み。実機適用は未検証。**
 
 ```sh
 sudo python3 /usr/local/libexec/4s-mkra-watch/maintenance_switch.py status
-sudo python3 /usr/local/libexec/4s-mkra-watch/maintenance_switch.py enter --confirm-preflight
+sudo python3 /usr/local/libexec/4s-mkra-watch/maintenance_switch.py preflight --target-bundle /path/to/new-bundle
+sudo python3 /usr/local/libexec/4s-mkra-watch/maintenance_switch.py enter --confirm-preflight --target-bundle /path/to/new-bundle
 ```
 
 `enter` は次の順序で動く。
@@ -73,6 +76,8 @@ sudo python3 /usr/local/libexec/4s-mkra-watch/maintenance_switch.py enter --conf
 3. unit file hashと各timerの元のenabled/active状態をmode `0600` の保守記録に保存する。
 4. watcherおよびBS2K/BS4K EPG timerを`disable --now`し、serviceがinactiveになるのを待つ。serviceをkill/stopしない。
 5. 2つのflockを保持したまま対話shellを開く。timer起動競合や手動watcher起動は既存nonblocking flockで即時拒否される。
+
+`preflight`はread-only snapshotでありlock barrierではない。`enter`はcurrentとtarget fingerprintを記録し、同じAPI/tuner/recording/scannerチェックをlock取得後に繰り返す。通常保守でtarget runtimeを使わない場合は`--target-bundle`を省略する。旧R4 runtime切替ではtargetが必須。
 
 保守shell終了後もtimerは無効のまま。helperやhostが途中終了しても自動再開せずfail-closedにする。保守記録は削除しない。再起動をまたいだ場合はboot ID mismatchで自動resumeを拒否する。
 
@@ -118,6 +123,8 @@ sudo python3 /usr/local/libexec/4s-mkra-watch/maintenance_switch.py resume --con
 
 resumeはhost boot ID、unit hashes、watcher bundle hashes、保守記録、timer状態を照合し、開始前と同じtimer enable/activeを戻す。その後lockを解放して既存oneshot watcherを起動し、最大15分、direct API、proxy、EPGStation healthをread-onlyで待つ。既存backoffは消さない。復帰成功後Eを保存して保守記録を`RESTORED`にする。
 
+R4.5 target bundleを`enter --target-bundle`で事前承認した場合に限り、runtime fingerprintは開始前bundleまたはそのtarget bundleのいずれかを受け付ける。`switch_runtime.py install --bundle ...`はshellを終了した後に実行し、disabled timer、inactive service、空きshared locks、十分なrollback容量を再確認する。失敗時は旧runtime backupへのrollbackを試みる。bundle差替えだけでは受信機processは更新されず、API healthyならwatcherは稼働中serverを保持する。
+
 API/EPG healthが戻らない場合は`RESTORE_FAILED`と記録する。timerは開始前状態で動作し通常のbackoff/retryを担う。強制起動、受信機reset、予約DB変更はしない。timer状態が部分復帰なら自動判断せずmanual review。
 
 ## ロールバックと停止判定
@@ -135,7 +142,7 @@ API/EPG healthが戻らない場合は`RESTORE_FAILED`と記録する。timerは
 ### R3 オフライン検証記録
 
 - `python3 tools/mkra-watch/test_maintenance_switch.py`: **14/14 PASS**（fake systemd/flock。timer競合、既存lock、途中失敗、recording拒否、二重開始、復元中断・部分復元など）。
-- CI相当の `python3 -m unittest discover -s tools/mkra-watch -p 'test_*.py'`: **32/32 PASS**（既存watcherテストを含む）。
+- `python3 -m unittest discover -s tools/mkra-watch -p 'test_*.py'`: R4.5時点 **44/44 PASS**（legacy/v2 runtime contract、runtime install/rollback、rollback資材破損拒否、実行中ELF hash確認を含む）。
 - `cargo test --locked`: **216 passed / 0 failed**。
 - `./build-device.sh --locked`: **PASS**。成果物はARM 32-bit EABI5、musl向け、静的リンク。`readelf`で`INTERP` segmentなし。成果物SHA-256: `1c38a830aa33172c54b29cbcdb395feb0c8b3acc53949a7d0a814d5030b26b40`。
 - `git diff --check`: **PASS**。
@@ -176,3 +183,7 @@ R3 helperを一時的な新規`/run`ディレクトリへ隔離配置し、SHA-2
 6. 受入後の復帰は保存済みの元bundle/hash/argvを照合してから行い、API・lock・watcher health・録画予約状態を確認する。
 
 R4では実機状態の取得まで到達したが、上記の独立ブロッカーにより保守移行は実施していない。復帰試験のPASSは未取得である。
+
+### R4.5 offline migration kit
+
+[`docs/BS2K-R4.5-MIGRATION-KIT.ja.md`](BS2K-R4.5-MIGRATION-KIT.ja.md)は旧版signal/Drop経路の証拠、移行方式比較、legacy inline-pin compatibility、schema v2 bundle、host runtime install/rollback、実行中ELF hash readback、R5条件をまとめる。R4.5でhost/receiver変更はしておらず、power cycle方式も未実施。

@@ -2,7 +2,7 @@
 
 外部Linuxサーバのsystemd timerから本体の状態を検査し、mkraが消えたときだけ`/tmp/mt/`へ投入する。純正フラッシュ・ブート設定には書かない。公開作業ではこの仕組みを実機へ配備し直していない。
 
-BS2K保守試験に向けた、watcher/EPG timerの保守待機、統合版のgraceful shutdown、復帰手順は[保守切替Runbook](BS2K-MAINTENANCE-SWITCH.ja.md)を参照。そこに記載した補助ツールは既存bundleへ同梱されず、実機への配備・適用も未検証。
+BS2K保守試験に向けたwatcher/EPG timer待機、runtime切替、rollback、graceful shutdownの制約は[保守切替Runbook](BS2K-MAINTENANCE-SWITCH.ja.md)と[R4.5移行キット](BS2K-R4.5-MIGRATION-KIT.ja.md)を参照。これら補助ツールは通常の自動再投入bundleに含めず、管理ホストへの配置・適用は未検証。
 
 ## ローカルでbundleを作る
 
@@ -11,7 +11,7 @@ BS2K保守試験に向けた、watcher/EPG timerの保守待機、統合版のgr
 python3 tools/mkra-watch/make_bundle.py --output dist/mkra-watch
 ```
 
-`dist/mkra-watch/`にはARM実行ファイル、5局の追加設定、watcher、telnet helper、ハッシュmanifestだけが入る。buildは純正バイナリを必要としない。既存bundleを上書きしない。manifestのないbundle、バイナリや局表の改変は照合で停止する。
+`dist/mkra-watch/`にはARM実行ファイル、5局の追加設定、watcher、telnet helper、schema v2のハッシュmanifestだけが入る。manifestはbinary・設定・watcher・helperを固定する。buildは純正バイナリを必要としない。既存bundleを上書きしない。manifestのないbundle、binaryや局表、watcher/helperの改変は照合で停止する。
 
 公開版ではビルド済みの特定バイナリのハッシュをソースに固定せず、各bundle作成時にサイズ・SHA-256・転送用MD5を確定する。ソースビルドの違いを反映できる。SHA-256は整合性確認であり署名認証の代わりではない。
 
@@ -33,6 +33,8 @@ python3 watch.py --dry-run
 ```
 
 `--dry-run`は接続・安全確認を行うが、RAM転送やサーバ起動をしない。
+
+`--dry-run`もwatcher state/lock更新やnetwork readを行うので、read-only診断ではない。保守直前のhost-only read-only確認には`maintenance_switch.py preflight`を使う。起動後に実行中ELFが配布targetと一致するか読むには`python3 watch.py --verify-runtime`を使う。このコマンドはAPI healthを変更せず、`/proc/<pid>/exe`の実行image hashを照合する。
 
 動作を確認してからsystemd unitを登録する。標準timerは45秒＋最大10秒の揺らぎ。既存環境のunitと衝突しないようにする。
 

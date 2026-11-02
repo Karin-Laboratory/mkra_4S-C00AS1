@@ -14,17 +14,26 @@ def make_bundle(binary, output):
     data = binary.read_bytes()
     if len(data) < 52 or data[:7] != b'\x7fELF\x01\x01\x01' or int.from_bytes(data[18:20], 'little') != 40:
         raise ValueError('expected a little-endian ELF32 ARM executable')
-    output.mkdir(parents=True, exist_ok=False)
+    output.mkdir(mode=0o750, parents=True, exist_ok=False)
     config = ROOT / 'config/bs-additional-main.tsv'
-    for source, name in [(binary, 'mkra'), (config, 'bs-channels.tsv'),
-                         (ROOT/'tools/mkra-watch/watch.py', 'watch.py'),
-                         (ROOT/'tools/sharp_telnet.py', 'sharp_telnet.py')]:
+    sources = [(binary, 'mkra'), (config, 'bs-channels.tsv'),
+               (ROOT/'tools/mkra-watch/watch.py', 'watch.py'),
+               (ROOT/'tools/sharp_telnet.py', 'sharp_telnet.py')]
+    for source, name in sources:
         shutil.copy2(source, output/name)
+        (output/name).chmod(0o755 if name == 'mkra' else 0o644)
     cfg = config.read_bytes()
-    manifest = {'binary_size': len(data), 'binary_sha256': hashlib.sha256(data).hexdigest(),
+    watcher = (output/'watch.py').read_bytes()
+    helper = (output/'sharp_telnet.py').read_bytes()
+    manifest = {'schema': 2,
+                'binary_size': len(data), 'binary_sha256': hashlib.sha256(data).hexdigest(),
                 'binary_md5': hashlib.md5(data).hexdigest(), 'config_sha256': hashlib.sha256(cfg).hexdigest(),
-                'config_md5': hashlib.md5(cfg).hexdigest()}
-    (output/'bundle.json').write_text(json.dumps(manifest, indent=2)+'\n')
+                'config_md5': hashlib.md5(cfg).hexdigest(),
+                'watcher_sha256': hashlib.sha256(watcher).hexdigest(),
+                'helper_sha256': hashlib.sha256(helper).hexdigest()}
+    manifest_path = output/'bundle.json'
+    manifest_path.write_text(json.dumps(manifest, indent=2)+'\n')
+    manifest_path.chmod(0o644)
     return manifest
 
 if __name__ == '__main__':
