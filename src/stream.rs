@@ -313,6 +313,8 @@ pub enum SubscribeError {
     Source(io::Error),
     /// Too many clients.
     TooManyClients,
+    /// The process is shutting down and will not open a new frontend source.
+    ShuttingDown,
 }
 
 pub struct BrokerConfig {
@@ -342,6 +344,8 @@ pub struct Broker {
     cfg: BrokerConfig,
     factory: SourceFactory,
     state: Mutex<Option<Arc<Session>>>,
+    stopped: Condvar,
+    shutting_down: AtomicBool,
 }
 
 impl Broker {
@@ -350,6 +354,8 @@ impl Broker {
             cfg,
             factory,
             state: Mutex::new(None),
+            stopped: Condvar::new(),
+            shutting_down: AtomicBool::new(false),
         })
     }
 
@@ -365,7 +371,13 @@ impl Broker {
         agent: String,
         url: String,
     ) -> Result<(Arc<Session>, Arc<Subscriber>), SubscribeError> {
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err(SubscribeError::ShuttingDown);
+        }
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err(SubscribeError::ShuttingDown);
+        }
 
         if let Some(session) = state.as_ref() {
             if session.channel_key != channel_key {
@@ -399,11 +411,18 @@ impl Broker {
         let broker = Arc::clone(self);
         let pump_session = Arc::clone(&session);
         let linger = self.cfg.linger;
-        std::thread::Builder::new()
+        if let Err(error) = std::thread::Builder::new()
             .name("mkra-pump".into())
             .stack_size(128 * 1024)
             .spawn(move || pump(broker, pump_session, source, linger))
-            .map_err(SubscribeError::Source)?;
+        {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.as_ref().is_some_and(|s| Arc::ptr_eq(s, &session)) {
+                *state = None;
+            }
+            self.stopped.notify_all();
+            return Err(SubscribeError::Source(error));
+        }
 
         Ok((session, sub))
     }
@@ -431,8 +450,19 @@ impl Broker {
 
     /// Stop the current session outright (used on shutdown).
     pub fn shutdown(&self) {
+        self.shutting_down.store(true, Ordering::Release);
         if let Some(s) = self.current() {
             s.stop();
+        }
+        // Do not let the process release its cross-process frontend flock
+        // while the pump still owns a reader or is tearing down its graph.
+        // The pump clears state only after `drop(source)` has returned.
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        while state.is_some() {
+            state = self
+                .stopped
+                .wait(state)
+                .unwrap_or_else(|e| e.into_inner());
         }
     }
 }
@@ -503,6 +533,7 @@ fn pump(
     if state.as_ref().is_some_and(|s| Arc::ptr_eq(s, &session)) {
         *state = None;
     }
+    broker.stopped.notify_all();
 }
 
 #[cfg(test)]
@@ -677,6 +708,50 @@ mod tests {
             },
             Box::new(|_| Ok(Box::new(Counting(100)) as Box<dyn TsSource>)),
         )
+    }
+
+    struct DropObserved(Arc<AtomicBool>);
+    impl TsSource for DropObserved {
+        fn read_into(&mut self, _out: &mut Vec<u8>) -> io::Result<usize> {
+            std::thread::sleep(Duration::from_millis(10));
+            Ok(0)
+        }
+        fn describe(&self) -> String {
+            "drop-observed".into()
+        }
+    }
+    impl Drop for DropObserved {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    #[test]
+    fn shutdown_waits_for_source_cleanup_and_rejects_new_sessions() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let source_dropped = Arc::clone(&dropped);
+        let b = Broker::new(
+            BrokerConfig {
+                ring_bytes: 4096,
+                max_clients: 2,
+                linger: Duration::from_secs(30),
+            },
+            Box::new(move |_| {
+                Ok(Box::new(DropObserved(Arc::clone(&source_dropped))) as Box<dyn TsSource>)
+            }),
+        );
+        let (_session, _sub) = b
+            .subscribe("BS17_0", "t".into(), 0, "test".into(), "/".into())
+            .unwrap();
+
+        b.shutdown();
+
+        assert!(dropped.load(Ordering::Acquire), "source must be dropped before shutdown returns");
+        assert!(b.current().is_none(), "frontend session must be cleared before shutdown returns");
+        assert!(matches!(
+            b.subscribe("BS17_0", "later".into(), 0, "test".into(), "/".into()),
+            Err(SubscribeError::ShuttingDown)
+        ));
     }
 
     #[test]

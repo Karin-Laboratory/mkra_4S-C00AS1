@@ -6,8 +6,8 @@
 
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 /// Caps on what we will read before deciding a request is hostile or broken.
@@ -242,19 +242,37 @@ pub fn respond_stream_headers(
 
 pub type Handler = Arc<dyn Fn(&Request, &mut TcpStream) + Send + Sync>;
 
-/// Accept loop. Blocks until the listener fails.
-pub fn serve(listener: TcpListener, max_conns: usize, handler: Handler) -> io::Result<()> {
-    let live = Arc::new(AtomicUsize::new(0));
-    for stream in listener.incoming() {
-        let mut stream = match stream {
-            Ok(s) => s,
+/// Accept loop. Returns after a shutdown request, leaving application cleanup
+/// to the caller. Nonblocking accept bounds signal-to-shutdown latency.
+pub fn serve(
+    listener: TcpListener,
+    max_conns: usize,
+    handler: Handler,
+    shutdown_requested: &AtomicBool,
+    on_shutdown: impl FnOnce(),
+) -> io::Result<()> {
+    listener.set_nonblocking(true)?;
+    let live = Arc::new(LiveConnections::default());
+    let mut result = Ok(());
+    loop {
+        if shutdown_requested.load(Ordering::Relaxed) {
+            break;
+        }
+        let mut stream = match listener.accept() {
+            Ok((s, _)) => s,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(25));
+                continue;
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => {
                 eprintln!("mkra: accept failed: {e}");
-                continue;
+                result = Err(e);
+                break;
             }
         };
 
-        if live.load(Ordering::Relaxed) >= max_conns {
+        if live.active.load(Ordering::Relaxed) >= max_conns {
             let _ = respond_error(&mut stream, 503, "too many connections", false);
             continue;
         }
@@ -276,22 +294,45 @@ pub fn serve(listener: TcpListener, max_conns: usize, handler: Handler) -> io::R
             eprintln!("mkra: could not spawn connection thread");
         }
     }
-    Ok(())
+    // Stop the source pump first: it closes subscriber rings and waits for
+    // reader/graph teardown. Active stream handlers can then drain cleanly.
+    on_shutdown();
+    live.wait_empty();
+    result
 }
 
 /// A live-connection slot that is given back however the thread ends.
-struct Slot(Arc<AtomicUsize>);
+#[derive(Default)]
+struct LiveConnections {
+    active: AtomicUsize,
+    wait_lock: Mutex<()>,
+    empty: Condvar,
+}
+
+impl LiveConnections {
+    fn wait_empty(&self) {
+        let mut guard = self.wait_lock.lock().unwrap_or_else(|e| e.into_inner());
+        while self.active.load(Ordering::Acquire) != 0 {
+            guard = self.empty.wait(guard).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+}
+
+struct Slot(Arc<LiveConnections>);
 
 impl Slot {
-    fn take(counter: Arc<AtomicUsize>) -> Self {
-        counter.fetch_add(1, Ordering::Relaxed);
+    fn take(counter: Arc<LiveConnections>) -> Self {
+        counter.active.fetch_add(1, Ordering::Relaxed);
         Slot(counter)
     }
 }
 
 impl Drop for Slot {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::Relaxed);
+        let _guard = self.0.wait_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if self.0.active.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.0.empty.notify_all();
+        }
     }
 }
 
@@ -400,6 +441,43 @@ mod tests {
         let s = String::from_utf8(out).unwrap();
         assert!(s.contains("HTTP/1.1 404 Not Found"));
         assert!(s.ends_with(r#"{"code":404,"reason":"not found"}"#));
+    }
+
+    #[test]
+    fn accept_loop_returns_after_shutdown_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let server_stop = Arc::clone(&stop);
+        let handler_done = Arc::new(AtomicBool::new(false));
+        let server_handler_done = Arc::clone(&handler_done);
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let release_handler = Arc::new(AtomicBool::new(false));
+        let server_release_handler = Arc::clone(&release_handler);
+        let shutdown_callback_ran = Arc::new(AtomicBool::new(false));
+        let callback_state = Arc::clone(&shutdown_callback_ran);
+        let server = std::thread::spawn(move || {
+            let handler: Handler = Arc::new(move |_: &Request, _: &mut TcpStream| {
+                started_tx.send(()).unwrap();
+                while !server_release_handler.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                server_handler_done.store(true, Ordering::Release);
+            });
+            serve(listener, 4, handler, &server_stop, || {
+                release_handler.store(true, Ordering::Release);
+                callback_state.store(true, Ordering::Release);
+            })
+        });
+        let mut client = TcpStream::connect(addr).unwrap();
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: test\r\n\r\n")
+            .unwrap();
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        stop.store(true, Ordering::Relaxed);
+        server.join().unwrap().unwrap();
+        assert!(shutdown_callback_ran.load(Ordering::Acquire));
+        assert!(handler_done.load(Ordering::Acquire), "HTTP handler must drain before return");
     }
 
     #[test]

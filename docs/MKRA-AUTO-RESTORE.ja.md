@@ -2,6 +2,8 @@
 
 外部Linuxサーバのsystemd timerから本体の状態を検査し、mkraが消えたときだけ`/tmp/mt/`へ投入する。純正フラッシュ・ブート設定には書かない。公開作業ではこの仕組みを実機へ配備し直していない。
 
+BS2K保守試験に向けた、watcher/EPG timerの保守待機、統合版のgraceful shutdown、復帰手順は[保守切替Runbook](BS2K-MAINTENANCE-SWITCH.ja.md)を参照。そこに記載した補助ツールは既存bundleへ同梱されず、実機への配備・適用も未検証。
+
 ## ローカルでbundleを作る
 
 ```sh
