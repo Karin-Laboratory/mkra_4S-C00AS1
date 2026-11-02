@@ -49,6 +49,9 @@ pub const MSGH_LIST: &str = "/tmp/bdh_out_msgh.lst";
 /// `tools/analysis/fed_dispatch.py`.
 pub const MSG_FED_SET_TUNING_START: u32 = 2;
 
+/// Legacy TUM -> FEM tuning request (ABS:0x56de14, tuner:0xba64).
+pub const MSG_FEM_LEGACY_TUNING_START: u32 = 0x200d;
+
 /// `msgFemRequestFedCtrlTunerPowerOff` handled by `vFedLocalMain`.
 pub const MSG_FED_TUNER_POWER_OFF: u32 = 0x0D;
 
@@ -274,9 +277,11 @@ pub fn parse_msgh_list(text: &str, qid: u32) -> Option<c_int> {
 
 /// A tune addressed straight at one frontend decoder, skipping the FEM.
 ///
-/// This is the *only* route to the non-4K frontends: the FEM entry point we
-/// recovered (`psfc_fed_AdbsSetTuningStart`, docs/ABI.md §7) is advanced-BS only,
-/// while the FED dispatchers themselves share one vocabulary. Talking to a FED
+/// This is the non-4K route implemented here. The recovered library entry point
+/// (`psfc_fed_AdbsSetTuningStart`, docs/ABI.md §7) selects advanced-BS devices;
+/// a separate legacy TUM state machine exists in `abs` but its complete request
+/// contract is still under investigation (docs/BS2K-TUNING-API.ja.md).
+/// The FED dispatchers themselves share one vocabulary. Talking to a FED
 /// directly means we also take over the FEM's job — in particular the RF→IF
 /// conversion, which is why `if_khz` is spelled out here instead of `freq_khz`.
 ///
@@ -323,6 +328,18 @@ pub struct FedTuneRequest {
 }
 
 impl FedTuneRequest {
+    fn fem_legacy_message(&self) -> Result<SysVWire, String> {
+        if !matches!(self.frontend, Frontend::IsdbS { .. }) {
+            return Err("legacy FEM request requires ISDB-S".into());
+        }
+        // ABS:0x56de60..0x56de78 builds TSID, frequency, tune kind and mode;
+        // tuner:0x140f4 forwards this 20-byte body unchanged to the FED after
+        // its own path/state handling. No pointers are carried in this body.
+        let mut msg = self.message()?;
+        msg.msg_id = MSG_FEM_LEGACY_TUNING_START;
+        Ok(msg)
+    }
+
     /// Reproduce the message captured from the running 4K frontend.
     pub fn advanced_bs(stream_id: u16, rf_khz: u32) -> Self {
         FedTuneRequest {
@@ -382,11 +399,10 @@ impl FedTuneRequest {
             if !(1..=6).contains(&path) {
                 return Err(format!("path must be 1..6, got {path}"));
             }
-            // The non-4K FED only performs its TSID-selection path when mode
-            // is 2.  0xFFFF produces mode 1 and skips that path; 0x40F1 is a
-            // second vendor sentinel in the candidate scan.  Both yielded a
-            // silent no-data tune during the first live TS_RECODER attempt.
-            if self.stream_id == 0xFFFF || self.stream_id == 0x40F1 {
+            // Only FFFF requests mode1 and skips explicit TSID selection.
+            // 40F1 is a real NHK BS transport, verified in the received NIT;
+            // its early zero-byte trial predated the working TSI route.
+            if self.stream_id == 0xFFFF {
                 return Err(format!(
                     "ISDB-S needs an explicit, non-sentinel TSID (got {:04X}); \
                      use a real TSID such as 4010 on BS-1",
@@ -653,6 +669,17 @@ impl Tuner {
         Ok(())
     }
 
+    /// Use the native legacy FEM state handling instead of bypassing it.
+    /// The caller must open FEMD_QID and assign an ISDB-S device first.
+    pub fn tune_fem_legacy(&self, req: &FedTuneRequest) -> io::Result<()> {
+        let msg = req.fem_legacy_message()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        let rc = unsafe { sys::msgsnd(self.msqid,
+            &msg as *const SysVWire as *const c_void, MSGSZ, sys::IPC_NOWAIT) };
+        if rc < 0 { return Err(io::Error::last_os_error()); }
+        Ok(())
+    }
+
     /// Ask a non-4K FED to enter RF standby using the product's own message.
     pub fn power_off_fed(&self, req: &FedPowerOffRequest) -> io::Result<()> {
         let msg = req
@@ -901,6 +928,18 @@ mod tests {
     }
 
     #[test]
+    fn legacy_fem_preserves_the_verified_fed_body_and_rejects_s3() {
+        let r = FedTuneRequest::isdb_s(1, 0x4010, 11_727_480).unwrap();
+        let m = r.fem_legacy_message().unwrap();
+        assert_eq!(m.msg_id, 0x200d);
+        assert_eq!(m.len, 20);
+        assert_eq!(m.src, 1);
+        assert_eq!(m.payload, r.message().unwrap().payload);
+        assert!(FedTuneRequest::advanced_bs(0xb110, 12_034_360)
+            .fem_legacy_message().is_err());
+    }
+
+    #[test]
     fn fed_request_rejects_a_frequency_that_is_not_an_rf_downlink() {
         let base = FedTuneRequest::isdb_s(1, 0x4010, 11_727_480).unwrap();
         assert!(base.validate().is_ok());
@@ -948,8 +987,9 @@ mod tests {
     fn non_4k_rejects_wildcard_tsids_that_skip_selection() {
         let unspecified = FedTuneRequest::isdb_s(1, 0xFFFF, 11_727_480).unwrap();
         assert!(unspecified.validate().is_err());
-        let vendor_sentinel = FedTuneRequest::isdb_s(1, 0x40F1, 11_996_000).unwrap();
-        assert!(vendor_sentinel.validate().is_err());
+        let received_nhk = FedTuneRequest::isdb_s(1, 0x40F1, 11_996_000).unwrap();
+        assert!(received_nhk.validate().is_ok());
+        assert_eq!(received_nhk.mode(),2);
         let real = FedTuneRequest::isdb_s(1, 0x4010, 11_727_480).unwrap();
         assert!(real.validate().is_ok());
         assert_eq!(real.mode(), 2);
